@@ -46,6 +46,12 @@
 #include "bta_ar_api.h"
 #endif
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+
+#include "mediatek/include/mtk_bta_av_act.h"
+
 /*****************************************************************************
  *  Constants
  ****************************************************************************/
@@ -1186,6 +1192,10 @@ void bta_av_conn_chg(tBTA_AV_DATA* p_data) {
           APPL_TRACE_DEBUG("%s: update rc_acp shdl:%d/%d srch:%d", __func__,
                            index + 1, p_rcb->shdl, p_scb->rc_handle);
 
+          /** M: Bug fix. Cancel avrc_ct_timer if avctp channel connected.  @{ */
+          alarm_cancel(p_scb->avrc_ct_timer);
+          /** @} */
+
           p_rcb2 = bta_av_get_rcb_by_shdl(p_rcb->shdl);
           if (p_rcb2) {
             /* found the RCB that was created to associated with this SCB */
@@ -1307,7 +1317,16 @@ void bta_av_disable(tBTA_AV_CB* p_cb, UNUSED_ATTR tBTA_AV_DATA* p_data) {
 
   bta_av_close_all_rc(p_cb);
 
-  osi_free_and_reset((void**)&p_cb->p_disc_db);
+/** M: Bug fix for Before av disable, Cancel the AVRCP service search procedure if it has been started. @{ */
+  if(p_cb->p_disc_db)
+  {
+    APPL_TRACE_EVENT("bta_av_disable: AVRC find service started, cancel it before disable");
+    (void)SDP_CancelServiceSearch (p_cb->p_disc_db);
+     osi_free_and_reset((void**)&p_cb->p_disc_db);
+  }
+  else
+/** @} */
+    osi_free_and_reset((void**)&p_cb->p_disc_db);
 
   /* disable audio/video - de-register all channels,
    * expect BTA_AV_DEREG_COMP_EVT when deregister is complete */
@@ -1461,9 +1480,21 @@ void bta_av_sig_chg(tBTA_AV_DATA* p_data) {
         /* Possible collision : need to avoid outgoing processing while the
          * timer is running */
         p_scb->coll_mask = BTA_AV_COLL_INC_TMR;
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+        uint64_t ms_t = BTA_AV_ACCEPT_SIGNALLING_TIMEOUT_MS;
+        if (interop_mtk_match_addr_name(INTEROP_MTK_A2DP_CHANGE_ACCEPT_SIGNALLING_TMS,
+            &(p_scb->PeerAddress()))) {
+          ms_t = 6000;
+        }
+        alarm_set_on_mloop(p_cb->accept_signalling_timer,
+            ms_t,
+            bta_av_accept_signalling_timer_cback,
+            UINT_TO_PTR(xx));
+#else
         alarm_set_on_mloop(
             p_cb->accept_signalling_timer, BTA_AV_ACCEPT_SIGNALLING_TIMEOUT_MS,
             bta_av_accept_signalling_timer_cback, UINT_TO_PTR(xx));
+#endif
       }
     }
   }
@@ -1499,6 +1530,20 @@ void bta_av_sig_chg(tBTA_AV_DATA* p_data) {
         }
       }
     }
+    /** M: Bug fix for avoid signal channel not disconnect@{ */
+    else
+    {
+        for (xx = 0; xx < BTA_AV_NUM_STRS; xx++)
+        {
+            if ((p_cb->p_scb[xx]) &&
+                    (p_cb->p_scb[xx]->PeerAddress() == p_data->str_msg.bd_addr) &&
+                    p_cb->p_scb[xx]->state == 2)
+            {
+                bta_av_ssm_execute(p_cb->p_scb[xx], BTA_AV_AVDT_DISCONNECT_EVT, NULL);
+            }
+        }
+    }
+    /** @} */
   }
   APPL_TRACE_DEBUG("%s: sig_chg conn_lcb: 0x%x", __func__, p_cb->conn_lcb);
 }
@@ -1666,6 +1711,10 @@ tBTA_AV_FEAT bta_av_check_peer_features(uint16_t service_uuid) {
             peer_features |= (BTA_AV_FEAT_BROWSE);
         }
       }
+      /** M: Bug fix for avrcp version dynamic adjust. @{ */
+      if (UUID_SERVCLASS_AV_REMOTE_CONTROL == service_uuid)
+        MtkRcSetPeerVersion(p_rec->remote_bd_addr, peer_rc_version, peer_features);
+      /** @} */
     }
   }
   APPL_TRACE_DEBUG("%s: peer_features:x%x", __func__, peer_features);
@@ -1764,12 +1813,11 @@ void bta_av_rc_disc_done(UNUSED_ATTR tBTA_AV_DATA* p_data) {
   tBTA_AV_LCB* p_lcb;
   uint8_t rc_handle;
   tBTA_AV_FEAT peer_features = 0; /* peer features mask */
-
+  bool b_getver_sdp = MtkRcIsInSdp();
   APPL_TRACE_DEBUG("%s: bta_av_rc_disc_done disc:x%x", __func__, p_cb->disc);
   if (!p_cb->disc) {
     return;
   }
-
   if ((p_cb->disc & BTA_AV_CHNL_MSK) == BTA_AV_CHNL_MSK) {
     /* this is the rc handle/index to tBTA_AV_RCB */
     rc_handle = p_cb->disc & (~BTA_AV_CHNL_MSK);
@@ -1835,7 +1883,11 @@ void bta_av_rc_disc_done(UNUSED_ATTR tBTA_AV_DATA* p_data) {
 
   APPL_TRACE_DEBUG("%s: peer_features 0x%x, features 0x%x", __func__,
                    peer_features, p_cb->features);
-
+  /** M: Bug fix for avrcp version dynamic adjust. @{ */
+  if (b_getver_sdp && (rc_handle == BTA_AV_RC_HANDLE_NONE)) {
+    return;
+  }
+  /** @} */
   /* if we have no rc connection */
   if (rc_handle == BTA_AV_RC_HANDLE_NONE) {
     if (p_scb) {

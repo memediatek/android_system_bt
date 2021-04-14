@@ -23,10 +23,10 @@
 #include "osi/include/properties.h"
 #include "profile/avrcp/connection_handler.h"
 #include "raw_address.h"
-
+#include "hardware/bt_av.h"
 namespace bluetooth {
 namespace avrcp {
-
+#include <hardware/audio.h>
 /**
  * AvrcpService is the management interface for AVRCP Target. It handles any
  * required thread switching, interface registration, and provides an API
@@ -65,6 +65,13 @@ class AvrcpService : public MediaCallbacks {
   void SendFolderUpdate(bool available_players, bool addressed_player,
                         bool queue) override;
   void SendActiveDeviceChanged(const RawAddress& address) override;
+  void MetadataChanged(const source_metadata_t* source_metadata,
+                       btav_audio_state_t state);
+  PlayState GetAudioState() { return audio_status_; }
+  PlayState GetA2dpState() { return a2dp_status_; }
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+  void SendAppSettingUpdate(bool setting_changed) override;
+#endif
 
   class ServiceInterfaceImpl : public ServiceInterface {
    public:
@@ -91,6 +98,8 @@ class AvrcpService : public MediaCallbacks {
   VolumeInterface* volume_interface_ = nullptr;
 
   ConnectionHandler* connection_handler_;
+  PlayState audio_status_ = PlayState::PAUSED;
+  PlayState a2dp_status_ = PlayState::PAUSED;
 };
 
 }  // namespace avrcp

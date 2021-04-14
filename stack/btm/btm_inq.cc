@@ -920,6 +920,16 @@ tBTM_STATUS BTM_CancelRemoteDeviceName(void) {
         return (BTM_UNKNOWN_ADDR);
     } else
       btsnd_hcic_rmt_name_req_cancel(p_inq->remname_bda);
+    /** M: callback on cancelling, no need to wait for RNR completed event @{*/
+    if (p_inq->p_remname_cmpl_cb) {
+      tBTM_REMOTE_DEV_NAME rem_name;
+      rem_name.status = BTM_BAD_VALUE_RET;
+      rem_name.length = 0;
+      rem_name.remote_bd_name[0] = 0;
+      p_inq->p_remname_cmpl_cb (&rem_name);
+      p_inq->p_remname_cmpl_cb = NULL;
+    }
+    /** @}  */
     return (BTM_CMD_STARTED);
   } else
     return (BTM_WRONG_MODE);

@@ -31,5 +31,6 @@ cc_library_static {
     ],
     static_libs: [
         "lib-bt-packets-base",
+        "libbluetooth-types",
     ],
 }

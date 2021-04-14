@@ -24,6 +24,8 @@
 
 #include <cstring>
 
+#include <base/bind.h>
+
 #include "bta_ag_api.h"
 #include "bta_ag_int.h"
 #include "bta_api.h"
@@ -34,7 +36,11 @@
 #include "osi/include/osi.h"
 #include "port_api.h"
 #include "utl.h"
+#include "stack/include/btu.h"
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
 /*****************************************************************************
  *  Constants
  ****************************************************************************/
@@ -341,7 +347,11 @@ void bta_ag_rfc_fail(tBTA_AG_SCB* p_scb, UNUSED_ATTR const tBTA_AG_DATA& data) {
   p_scb->peer_addr = RawAddress::kEmpty;
 
   /* reopen registered servers */
-  bta_ag_start_servers(p_scb, p_scb->reg_services);
+  /** M: Check if server has been started before reopen it. @{ */
+  if (bta_ag_is_server_closed(p_scb)) {
+    bta_ag_start_servers(p_scb, p_scb->reg_services);
+  }
+  /** @} */
 
   /* call open cback w. failure */
   bta_ag_cback_open(p_scb, peer_addr, BTA_AG_FAIL_RFCOMM);
@@ -472,7 +482,7 @@ void bta_ag_rfc_open(tBTA_AG_SCB* p_scb, const tBTA_AG_DATA& data) {
       bool sdp_wbs_support = p_scb->peer_sdp_features & BTA_AG_FEAT_WBS_SUPPORT;
       if (!p_scb->received_at_bac && sdp_wbs_support) {
         p_scb->codec_updated = true;
-        p_scb->peer_codecs = BTA_AG_CODEC_CVSD & BTA_AG_CODEC_MSBC;
+        p_scb->peer_codecs = BTA_AG_CODEC_CVSD | BTA_AG_CODEC_MSBC;
         p_scb->sco_codec = UUID_CODEC_MSBC;
       }
     } else {
@@ -525,6 +535,10 @@ void bta_ag_rfc_acp_open(tBTA_AG_SCB* p_scb, const tBTA_AG_DATA& data) {
   int status = PORT_CheckConnection(data.rfc.port_handle, &dev_addr, &lcid);
   if (status != PORT_SUCCESS) {
     LOG(ERROR) << __func__ << ", PORT_CheckConnection returned " << status;
+
+    do_in_main_thread(
+            FROM_HERE, base::Bind(&bta_ag_sm_execute_by_handle, bta_ag_scb_to_idx(p_scb),
+                     BTA_AG_RFC_SRV_CLOSE_EVT, data));
     return;
   }
 
@@ -541,10 +555,22 @@ void bta_ag_rfc_acp_open(tBTA_AG_SCB* p_scb, const tBTA_AG_DATA& data) {
       }
     }
     if (dev_addr == ag_scb.peer_addr && p_scb != &ag_scb) {
-      VLOG(1) << __func__ << ": fail outgoing connection before accepting "
+      if (bta_ag_scb_open(&ag_scb)) {
+        APPL_TRACE_WARNING(
+          "already connected serv_handle %d %d conn_handle %d, reject duplicate connection",
+          ag_scb.serv_handle[0], ag_scb.serv_handle[1], ag_scb.conn_handle);
+        status = RFCOMM_RemoveConnection(data.rfc.port_handle);
+        if (status != PORT_SUCCESS) {
+          LOG(WARNING) << __func__ << ": RFCOMM_RemoveConnection failed for "
+                       << dev_addr << ", handle "
+                       << std::to_string(data.rfc.port_handle) << ", error "
+                       << status;
+        }
+        return;
+      }
+      VLOG(0) << __func__ << ": fail outgoing connection before accepting "
               << ag_scb.peer_addr;
       // Fail the outgoing connection to clean up any upper layer states
-      bta_ag_rfc_fail(&ag_scb, tBTA_AG_DATA::kEmpty);
       // If client port is opened, close it
       if (ag_scb.conn_handle > 0) {
         status = RFCOMM_RemoveConnection(ag_scb.conn_handle);
@@ -555,11 +581,25 @@ void bta_ag_rfc_acp_open(tBTA_AG_SCB* p_scb, const tBTA_AG_DATA& data) {
                        << status;
         }
       }
+
+      /* Need to trigger the state machine to send callback to the app    */
+      /* and move back to INIT state.                                     */
+        do_in_main_thread(
+            FROM_HERE, base::Bind(&bta_ag_sm_execute_by_handle, bta_ag_scb_to_idx(&ag_scb),
+                     BTA_AG_RFC_CLOSE_EVT, tBTA_AG_DATA::kEmpty));
+
+      /* Cancel SDP if it had been started. */
+      if(ag_scb.p_disc_db)
+      {
+          (void)SDP_CancelServiceSearch (ag_scb.p_disc_db);
+          bta_ag_free_db(&ag_scb, tBTA_AG_DATA::kEmpty);
+      }
+      bta_ag_rfc_fail(&ag_scb, tBTA_AG_DATA::kEmpty);
     }
     VLOG(1) << __func__ << ": dev_addr=" << dev_addr
             << ", peer_addr=" << ag_scb.peer_addr
             << ", in_use=" << ag_scb.in_use
-            << ", index=" << bta_ag_scb_to_idx(p_scb);
+            << ", index=" << bta_ag_scb_to_idx(&ag_scb);
   }
 
   p_scb->peer_addr = dev_addr;
@@ -658,6 +698,13 @@ void bta_ag_start_close(tBTA_AG_SCB* p_scb, const tBTA_AG_DATA& data) {
   /* if SCO is open close SCO and wait on RFCOMM close */
   if (bta_ag_sco_is_open(p_scb)) {
     p_scb->post_sco = BTA_AG_POST_SCO_CLOSE_RFC;
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+    if (interop_mtk_match_addr_name(INTEROP_MTK_HFP_DELAY_DISC_SCO,
+       &(p_scb->peer_addr))) {
+      APPL_TRACE_DEBUG("Delay disconnect sco after switch to active mode");
+      usleep(500 * 1000);
+    }
+#endif
   } else {
     p_scb->post_sco = BTA_AG_POST_SCO_NONE;
     bta_ag_rfc_do_close(p_scb, data);
@@ -859,3 +906,24 @@ void bta_ag_handle_collision(tBTA_AG_SCB* p_scb,
   alarm_set_on_mloop(p_scb->collision_timer, BTA_AG_COLLISION_TIMEOUT_MS,
                      bta_ag_collision_timer_cback, p_scb);
 }
+
+void bta_ag_rfc_srv_close(tBTA_AG_SCB* p_scb,
+                      UNUSED_ATTR const tBTA_AG_DATA& data) {
+    /** M: Bug fix for rfcomm connection fail error handling @{ */
+    // If client port is opened, close it
+    if (data.rfc.port_handle > 0) {
+        int status = RFCOMM_RemoveConnection(data.rfc.port_handle);
+        if (status != PORT_SUCCESS) {
+          LOG(WARNING) << __func__ << ": RFCOMM_RemoveConnection failed for "
+                       << p_scb->peer_addr << ", handle "
+                       << std::to_string(data.rfc.port_handle) << ", error "
+                       << status;
+        }
+    }
+    /* Make sure SCO state is BTA_AG_SCO_SHUTDOWN_ST */
+    bta_ag_sco_shutdown(p_scb, tBTA_AG_DATA::kEmpty);
+    /** @} */
+
+
+}
+

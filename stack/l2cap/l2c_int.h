@@ -249,7 +249,7 @@ typedef struct {
 } tL2C_RCB;
 
 #ifndef L2CAP_CBB_DEFAULT_DATA_RATE_BUFF_QUOTA
-#define L2CAP_CBB_DEFAULT_DATA_RATE_BUFF_QUOTA 100
+#define L2CAP_CBB_DEFAULT_DATA_RATE_BUFF_QUOTA 10
 #endif
 
 typedef void(tL2CAP_SEC_CBACK)(const RawAddress& bd_addr,

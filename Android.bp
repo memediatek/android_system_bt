@@ -25,6 +25,7 @@ subdirs = [
     "udrv",
     "tools",
     "proto",
+    "mediatek",
 ]
 
 filegroup {

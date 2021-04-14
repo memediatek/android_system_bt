@@ -20,6 +20,7 @@
 
 #include "bta_api.h"
 #include "bta_hh_int.h"
+#include "mediatek/bta/hh/bta_hh_int.h"
 #include "osi/include/osi.h"
 
 #if (BTA_HH_LE_INCLUDED == TRUE)
@@ -40,6 +41,10 @@
 #include "srvc_api.h"
 #include "stack/include/l2c_api.h"
 #include "utl.h"
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
 
 using bluetooth::Uuid;
 using std::vector;
@@ -651,6 +656,14 @@ void bta_hh_le_open_cmpl(tBTA_HH_DEV_CB* p_cb) {
 #endif
     bta_hh_le_register_input_notif(p_cb, p_cb->mode, true);
     bta_hh_sm_execute(p_cb, BTA_HH_OPEN_CMPL_EVT, NULL);
+
+    /** M: Bug fix for HOGP connection taking too long time @{ */
+    if (bta_hh_le_check_conn_params(p_cb)) {
+      L2CA_UpdateBleConnParams(p_cb->addr, p_cb->min_conn_int,
+                               p_cb->max_conn_int, p_cb->slave_latency,
+                               p_cb->supervision_tout);
+    }
+    /** @} */
 
 #if (BTA_HH_LE_RECONN == TRUE)
     if (p_cb->status == BTA_HH_OK) {
@@ -1380,10 +1393,15 @@ void read_pref_conn_params_cb(uint16_t conn_id, tGATT_STATUS status,
     if (timeout < 300) timeout = 300;
   }
 
-  BTM_BleSetPrefConnParams(p_dev_cb->addr, min_interval, max_interval, latency,
-                           timeout);
-  L2CA_UpdateBleConnParams(p_dev_cb->addr, min_interval, max_interval, latency,
-                           timeout);
+  /** M: Bug fix for HOGP connection taking too long time @{ */
+//  BTM_BleSetPrefConnParams(p_dev_cb->addr, min_interval, max_interval, latency,
+//                           timeout);
+//  L2CA_UpdateBleConnParams(p_dev_cb->addr, min_interval, max_interval, latency,
+//                           timeout);
+
+  bta_hh_le_save_conn_params(p_dev_cb,  min_interval, max_interval, latency,
+                             timeout);
+  /** @} */
 }
 
 /*******************************************************************************
@@ -1530,6 +1548,10 @@ void bta_hh_le_srvc_search_cmpl(tBTA_GATTC_SEARCH_CMPL* p_data) {
       for (const gatt::Characteristic& charac : service.characteristics) {
         if (charac.uuid == Uuid::From16Bit(GATT_UUID_GAP_PREF_CONN_PARAM)) {
           /* read the char value */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+          if (!interop_mtk_match_addr_name(INTEROP_MTK_LE_DISABLE_PREF_CONN_PARAMS,
+                                           &p_dev_cb->addr))
+#endif
           BtaGattQueue::ReadCharacteristic(p_dev_cb->conn_id,
                                            charac.value_handle,
                                            read_pref_conn_params_cb, p_dev_cb);

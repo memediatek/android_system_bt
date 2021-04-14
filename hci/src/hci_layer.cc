@@ -51,6 +51,13 @@
 #include "osi/include/reactor.h"
 #include "packet_fragmenter.h"
 
+#if defined(MTK_STACK_CONFIG_LOG) && (MTK_STACK_CONFIG_LOG == TRUE)
+#include "mediatek/include/fw_logger_filter.h"
+#include "mediatek/include/twrite.h"
+using vendor::mediatek::bluetooth::stack::BTSnoop;
+using vendor::mediatek::bluetooth::stack::FWLogFilter;
+#endif
+
 #define BT_HCI_TIMEOUT_TAG_NUM 1010000
 
 using bluetooth::common::MessageLoopThread;
@@ -79,6 +86,9 @@ typedef struct {
 // having less than 3 sec would hold the wakelock for init
 #define DEFAULT_STARTUP_TIMEOUT_MS 2900
 #define STRING_VALUE_OF(x) #x
+
+/** M: For MTK open bt time @{ */
+#define MTK_DEFAULT_STARTUP_TIMEOUT_MS 8000
 
 // Abort if there is no response to an HCI command.
 static const uint32_t COMMAND_PENDING_TIMEOUT_MS = 2000;
@@ -143,20 +153,34 @@ void initialization_complete() {
 }
 
 void hci_event_received(const base::Location& from_here, BT_HDR* packet) {
+#if defined(MTK_STACK_CONFIG_LOG) && (MTK_STACK_CONFIG_LOG == TRUE)
+  BTSnoop::GetInstance()->Capture(packet, true);
+  if (FWLogFilter::GetInstance()->Intercepted(packet)) {
+    return;
+  }
+#else
   btsnoop->capture(packet, true);
-
+#endif
   if (!filter_incoming_event(packet)) {
     send_data_upwards.Run(from_here, packet);
   }
 }
 
 void acl_event_received(BT_HDR* packet) {
+#if defined(MTK_STACK_CONFIG_LOG) && (MTK_STACK_CONFIG_LOG == TRUE)
+  BTSnoop::GetInstance()->Capture(packet, true);
+#else
   btsnoop->capture(packet, true);
+#endif
   packet_fragmenter->reassemble_and_dispatch(packet);
 }
 
 void sco_data_received(BT_HDR* packet) {
+#if defined(MTK_STACK_CONFIG_LOG) && (MTK_STACK_CONFIG_LOG == TRUE)
+  BTSnoop::GetInstance()->Capture(packet, true);
+#else
   btsnoop->capture(packet, true);
+#endif
   packet_fragmenter->reassemble_and_dispatch(packet);
 }
 
@@ -174,14 +198,14 @@ static future_t* hci_module_start_up(void) {
   command_credits = 1;
 
   // For now, always use the default timeout on non-Android builds.
-  uint64_t startup_timeout_ms = DEFAULT_STARTUP_TIMEOUT_MS;
+  uint64_t startup_timeout_ms = MTK_DEFAULT_STARTUP_TIMEOUT_MS;
 
   // Grab the override startup timeout ms, if present.
   char timeout_prop[PROPERTY_VALUE_MAX];
   if (!osi_property_get("bluetooth.enable_timeout_ms", timeout_prop,
                         STRING_VALUE_OF(DEFAULT_STARTUP_TIMEOUT_MS)) ||
       (startup_timeout_ms = atoi(timeout_prop)) < 100)
-    startup_timeout_ms = DEFAULT_STARTUP_TIMEOUT_MS;
+    startup_timeout_ms = MTK_DEFAULT_STARTUP_TIMEOUT_MS;
 
   startup_timer = alarm_new("hci.startup_timer");
   if (!startup_timer) {
@@ -407,8 +431,11 @@ static void event_packet_ready(void* pkt) {
 
 // Callback for the fragmenter to send a fragment
 static void transmit_fragment(BT_HDR* packet, bool send_transmit_finished) {
+#if defined(MTK_STACK_CONFIG_LOG) && (MTK_STACK_CONFIG_LOG == TRUE)
+  BTSnoop::GetInstance()->Capture(packet, false);
+#else
   btsnoop->capture(packet, false);
-
+#endif
   // HCI command packets are freed on a different thread when the matching
   // event is received. Check packet->event before sending to avoid a race.
   bool free_after_transmit =
@@ -492,6 +519,10 @@ static void command_timed_out(void* original_wait_entry) {
     command_timed_out_log_info(original_wait_entry);
     lock.unlock();
   }
+
+  /** M: Bug fix for race condition for pending command timer @{ */
+  if (list_is_empty(commands_pending_response)) return;
+  /** @} */
 
   // Don't request a firmware dump for multiple hci timeouts
   if (hci_timeout_abort_timer != NULL || hci_firmware_log_fd != INVALID_FD) {
@@ -660,6 +691,13 @@ static void dispatch_reassembled(BT_HDR* packet) {
 static waiting_command_t* get_waiting_command(command_opcode_t opcode) {
   std::lock_guard<std::recursive_timed_mutex> lock(
       commands_pending_response_mutex);
+ 
+  /** M: Bug fix for race condition for shut down thread and RX thread @{ */
+  if (NULL == commands_pending_response) {
+    LOG_WARN(LOG_TAG, "%s: commands pending response is NULL", __func__);
+    return NULL;
+  }
+  /** @} */
 
   for (const list_node_t* node = list_begin(commands_pending_response);
        node != list_end(commands_pending_response); node = list_next(node)) {

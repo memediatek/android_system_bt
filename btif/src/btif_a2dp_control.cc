@@ -34,6 +34,11 @@
 #include "btif_hf.h"
 #include "osi/include/osi.h"
 #include "uipc.h"
+#include "osi/include/properties.h"
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/mtk_btif_av.h"
+#endif
 
 #define A2DP_DATA_READ_POLL_MS 10
 
@@ -66,6 +71,9 @@ static void btif_a2dp_recv_ctrl_data(void) {
   tA2DP_CTRL_CMD cmd = A2DP_CTRL_CMD_NONE;
   int n;
 
+  /** M: Bug Fix: Store the BT on/off status. @{ */
+  char bt_state[PROPERTY_VALUE_MAX] = {0};
+  /** @} */
   uint8_t read_cmd = 0; /* The read command size is one octet */
   n = UIPC_Read(*a2dp_uipc, UIPC_CH_ID_AV_CTRL, NULL, &read_cmd, 1);
   cmd = static_cast<tA2DP_CTRL_CMD>(read_cmd);
@@ -120,12 +128,35 @@ static void btif_a2dp_recv_ctrl_data(void) {
         break;
       }
 
+      /** M: Bug Fix: Check if the BT is closing. @{ */
+      // The value '0' means BT is off and '1' means on.
+      osi_property_get("persist.vendor.bluetooth.state", bt_state, "1");
+      if (0 == strncmp(bt_state, "0", 1)) {
+        //BT is closing, ignore the start.
+        btif_a2dp_command_ack(A2DP_CTRL_ACK_FAILURE);
+        break;
+      }
+      /** @} */
+
       if (btif_a2dp_source_is_streaming()) {
         APPL_TRACE_WARNING("%s: A2DP command %s while source is streaming",
                            __func__, audio_a2dp_hw_dump_ctrl_event(cmd));
         btif_a2dp_command_ack(A2DP_CTRL_ACK_FAILURE);
         break;
       }
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      /***
+       * Check the remote device. If it special device, will
+       * break this loop and delay for 1s. After 1s, it will call
+       * btif_media_av_delay_start_cmd_hdlr to go on.
+       */
+      BtAvServiceDelayTimer delay_timer;
+      BtAvServiceDelayTimer::btif_a2dp_data_init(btif_a2dp_data_cb);
+      if (delay_timer.btif_av_is_black_peer_for_delay_start(btif_av_source_active_peer())) {
+          APPL_TRACE_EVENT("Break and delay 1s for START cmd");
+          break;
+      }
+#endif
 
       if (btif_av_stream_ready()) {
         /* Setup audio data channel listener */
@@ -442,3 +473,9 @@ void btif_a2dp_control_reset_audio_delay(void) {
   delay_report_stats.total_bytes_read = 0;
   delay_report_stats.timestamp = {};
 }
+
+/** M: Helper function for delay a2dp start. @{ */
+void btif_av_uipc_open_wrapper(tUIPC_CH_ID ch_id, tUIPC_RCV_CBACK* p_cback) {
+  UIPC_Open(*a2dp_uipc, ch_id, p_cback, A2DP_DATA_PATH);
+}
+/** @} */

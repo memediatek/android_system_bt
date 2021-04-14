@@ -1101,7 +1101,7 @@ bool GATT_Connect(tGATT_IF gatt_if, const RawAddress& bd_addr, bool is_direct,
 bool GATT_Connect(tGATT_IF gatt_if, const RawAddress& bd_addr, bool is_direct,
                   tBT_TRANSPORT transport, bool opportunistic,
                   uint8_t initiating_phys) {
-  LOG(INFO) << __func__ << "gatt_if=" << +gatt_if << ", address=" << bd_addr;
+  LOG(INFO) << __func__ << "gatt_if=" << +gatt_if << ", address=" << bd_addr << ", is_direct " << is_direct;
 
   /* Make sure app is registered */
   tGATT_REG* p_reg = gatt_get_regcb(gatt_if);
@@ -1121,8 +1121,18 @@ bool GATT_Connect(tGATT_IF gatt_if, const RawAddress& bd_addr, bool is_direct,
   }
 
   bool ret;
+  tGATT_TCB* p_tcb2 = gatt_find_tcb_by_addr(bd_addr, transport);
+
   if (is_direct) {
+    if ( GATT_CH_OPEN == gatt_get_ch_state(p_tcb2) ){
+        LOG(INFO) << "already connected. set it as holder";
+        gatt_update_app_use_link_flag(p_reg->gatt_if, p_tcb2, true, true);
+    }
     ret = gatt_act_connect(p_reg, bd_addr, transport, initiating_phys);
+    if(!ret){
+        LOG(INFO) << "cannot act_connect ret " << ret;
+        ret = true;
+    }
   } else {
     if (!BTM_BackgroundConnectAddressKnown(bd_addr)) {
       //  RPA can rotate, causing address to "expire" in the background
@@ -1132,6 +1142,7 @@ bool GATT_Connect(tGATT_IF gatt_if, const RawAddress& bd_addr, bool is_direct,
       ret = true;
     } else {
       ret = connection_manager::background_connect_add(gatt_if, bd_addr);
+      LOG(INFO) << "background_connect_add ret " << ret;
     }
   }
 

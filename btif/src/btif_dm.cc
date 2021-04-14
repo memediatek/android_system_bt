@@ -71,6 +71,10 @@
 #include "stack/btm/btm_int.h"
 #include "stack_config.h"
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+
 using bluetooth::Uuid;
 /******************************************************************************
  *  Constants & Macros
@@ -237,6 +241,10 @@ static char* btif_get_default_local_name();
 static void btif_stats_add_bond_event(const RawAddress& bd_addr,
                                       bt_bond_function_t function,
                                       bt_bond_state_t state);
+
+/** M: update the remote version before using it @{ */
+static void btif_update_remote_version_property(RawAddress* p_bd);
+/** @} */
 
 /******************************************************************************
  *  Externs
@@ -461,15 +469,21 @@ bool check_hid_le(const RawAddress* remote_bdaddr) {
  ******************************************************************************/
 bool check_sdp_bl(const RawAddress* remote_bdaddr) {
   uint16_t manufacturer = 0;
-  uint8_t lmp_ver = 0;
-  uint16_t lmp_subver = 0;
+  /** M: update the remote version before using it @{ */
+  //uint8_t lmp_ver = 0;
+  //uint16_t lmp_subver = 0;
+  /** @} */
   bt_property_t prop_name;
   bt_remote_version_t info;
 
   if (remote_bdaddr == NULL) return false;
 
+  /** M: update the remote version before using it @{ */
+  RawAddress bd_addr = *remote_bdaddr;
+  btif_update_remote_version_property(&bd_addr);
   /* fetch additional info about remote device used in iop query */
-  BTM_ReadRemoteVersion(*remote_bdaddr, &lmp_ver, &manufacturer, &lmp_subver);
+  // BTM_ReadRemoteVersion(*remote_bdaddr, &lmp_ver, &manufacturer, &lmp_subver);
+  /** @} */
 
   /* if not available yet, try fetching from config database */
   BTIF_STORAGE_FILL_PROPERTY(&prop_name, BT_PROPERTY_REMOTE_VERSION_INFO,
@@ -484,6 +498,18 @@ bool check_sdp_bl(const RawAddress* remote_bdaddr) {
   for (unsigned int i = 0; i < ARRAY_SIZE(sdp_blacklist); i++) {
     if (manufacturer == sdp_blacklist[i].manufact_id) return true;
   }
+
+  /**M:Workround for disable hid sdp @{*/
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr_name(INTEROP_MTK_HID_DISABLE_SDP, remote_bdaddr))
+  {
+        return true;
+  }
+
+  BTIF_TRACE_DEBUG("%s: %s is not in blacklist for skipping sdp", __func__, remote_bdaddr->ToString().c_str());
+#endif
+  /**@}*/
+
   return false;
 }
 
@@ -880,6 +906,10 @@ static void btif_dm_pin_req_evt(tBTA_DM_PIN_REQ* p_pin_req) {
       if (!interop_match_addr(INTEROP_DISABLE_AUTO_PAIRING, &bd_addr) &&
           !interop_match_name(INTEROP_DISABLE_AUTO_PAIRING,
                               (const char*)bd_name.name) &&
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+          !interop_mtk_match_addr_name(INTEROP_MTK_DISABLE_AUTO_PAIRING,
+                                       &bd_addr) &&
+#endif
           (pairing_cb.autopair_attempts == 0)) {
         BTIF_TRACE_DEBUG("%s() Attempting auto pair", __func__);
         pin_code.pin[0] = 0x30;
@@ -973,21 +1003,12 @@ static void btif_dm_ssp_cfm_req_evt(tBTA_DM_SP_CFM_REQ* p_ssp_cfm_req) {
 
   /* If JustWorks auto-accept */
   if (p_ssp_cfm_req->just_works) {
-    /* Pairing consent for JustWorks needed if:
-     * 1. Incoming (non-temporary) pairing is detected AND
-     * 2. local IO capabilities are DisplayYesNo AND
-     * 3. remote IO capabiltiies are DisplayOnly or NoInputNoOutput;
+    /* Pairing consent for JustWorks NOT needed if:
+     * 1. Incoming temporary pairing is detected
      */
-    if (is_incoming && pairing_cb.bond_type != BOND_TYPE_TEMPORARY &&
-        ((p_ssp_cfm_req->loc_io_caps == HCI_IO_CAP_DISPLAY_YESNO) &&
-         (p_ssp_cfm_req->rmt_io_caps == HCI_IO_CAP_DISPLAY_ONLY ||
-          p_ssp_cfm_req->rmt_io_caps == HCI_IO_CAP_NO_IO))) {
+    if (is_incoming && pairing_cb.bond_type == BOND_TYPE_TEMPORARY) {
       BTIF_TRACE_EVENT(
-          "%s: User consent needed for incoming pairing request. loc_io_caps: "
-          "%d, rmt_io_caps: %d",
-          __func__, p_ssp_cfm_req->loc_io_caps, p_ssp_cfm_req->rmt_io_caps);
-    } else {
-      BTIF_TRACE_EVENT("%s: Auto-accept JustWorks pairing", __func__);
+          "%s: Auto-accept JustWorks pairing for temporary incoming", __func__);
       btif_dm_ssp_reply(&bd_addr, BT_SSP_VARIANT_CONSENT, true, 0);
       return;
     }
@@ -1084,6 +1105,22 @@ static void btif_dm_auth_cmpl_evt(tBTA_DM_AUTH_CMPL* p_auth_cmpl) {
     }
   }
 
+  /** M: Bug fix for collision issues that fw send HCI_ERR_LMP_PDU_NOT_ALLOWED@{ */
+  if (p_auth_cmpl->fail_reason == HCI_ERR_LMP_PDU_NOT_ALLOWED){
+    // HCI_ERR_LMP_PDU_NOT_ALLOWED may occur when two paired devices are
+    // triggering connection and authentication together, peer device as master has
+    // entered encryption stage, but we are still trying to initiate authentication.
+    // Do not indicate bond state change or delete link key for this scenario.
+    if (p_auth_cmpl->bd_addr != pairing_cb.bd_addr &&
+        (!pairing_cb.ble.is_penc_key_rcvd)) {
+      LOG(INFO) << __func__
+                << " skipping SDP since we receive HCI_ERR_LMP_PDU_NOT_ALLOWED"
+                << p_auth_cmpl->bd_addr;
+      return;
+    }
+  }
+  /** @} */
+
   if (p_auth_cmpl->success) {
     // We could have received a new link key without going through the pairing
     // flow.  If so, we don't want to perform SDP or any other operations on the
@@ -1108,22 +1145,42 @@ static void btif_dm_auth_cmpl_evt(tBTA_DM_AUTH_CMPL* p_auth_cmpl) {
     state = BT_BOND_STATE_BONDED;
     bd_addr = p_auth_cmpl->bd_addr;
 
-    if (check_sdp_bl(&bd_addr) && check_cod_hid(&bd_addr)) {
+    if (check_sdp_bl(&bd_addr) && check_cod_hid(&bd_addr)
+        /**M:Fix for avoid HID Keyboard skip sdp @{*/
+        && check_cod(&bd_addr, COD_HID_POINTING)
+        /**@}*/
+      ) {
       LOG_WARN(LOG_TAG, "%s:skip SDP", __func__);
       skip_sdp = true;
     }
-    if (!pairing_cb.is_local_initiated && skip_sdp) {
-      bond_state_changed(status, bd_addr, state);
+
+    /**M:Workround for disable hid sdp @{*/
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+    if (skip_sdp)
+#else
+    if (!pairing_cb.is_local_initiated && skip_sdp)
+#endif
+    {
+      bond_state_changed(BT_STATUS_SUCCESS, bd_addr, BT_BOND_STATE_BONDED);
+      /**@}*/
 
       LOG_WARN(LOG_TAG, "%s: Incoming HID Connection", __func__);
       bt_property_t prop;
-      RawAddress bd_addr;
+
+      /**M:disable the local vairiable @{*/
+      //RawAddress bd_addr;
+      /**@}*/
       Uuid uuid = Uuid::From16Bit(UUID_SERVCLASS_HUMAN_INTERFACE);
 
       prop.type = BT_PROPERTY_UUIDS;
       prop.val = &uuid;
       prop.len = Uuid::kNumBytes128;
 
+      /**M:Workround for disable hid sdp @{*/
+      /* Also write this to the NVRAM */
+      status = btif_storage_set_remote_device_property(&bd_addr, &prop);
+      ASSERTC(status == BT_STATUS_SUCCESS, "storing remote services failed", status);
+      /**@}*/
       /* Send the event to the BTIF */
       HAL_CBACK(bt_hal_cbacks, remote_device_properties_cb, BT_STATUS_SUCCESS,
                 &bd_addr, 1, &prop);
@@ -1416,15 +1473,20 @@ static void btif_dm_search_services_evt(uint16_t event, char* p_param) {
       if (p_data->disc_res.result != BTA_SUCCESS &&
           pairing_cb.state == BT_BOND_STATE_BONDED &&
           pairing_cb.sdp_attempts < BTIF_DM_MAX_SDP_ATTEMPTS_AFTER_PAIRING) {
-        if (pairing_cb.sdp_attempts) {
-          BTIF_TRACE_WARNING("%s: SDP failed after bonding re-attempting",
-                             __func__);
-          pairing_cb.sdp_attempts++;
-          btif_dm_get_remote_services(bd_addr);
+
+        /** M: retry when BTA_DM_DISC_CMPL_EVT is received @{ */
+        BTIF_TRACE_DEBUG("%s:(pairing_cb.sdp_attempts=0x%x)", __func__,
+                         pairing_cb.sdp_attempts);
+        if (pairing_cb.sdp_attempts > 0) {
+          BTIF_TRACE_WARNING("%s:SDP failed after bonding re-attempting "
+                             "when BTA_DM_DISC_CMPL_EVT is received", __func__);
+          //pairing_cb.sdp_attempts++;
+          //btif_dm_get_remote_services(bd_addr);
         } else {
           BTIF_TRACE_WARNING("%s: SDP triggered by someone failed when bonding",
                              __func__);
         }
+        /** @} */
         return;
       }
       prop.type = BT_PROPERTY_UUIDS;
@@ -1487,6 +1549,14 @@ static void btif_dm_search_services_evt(uint16_t event, char* p_param) {
 
     case BTA_DM_DISC_CMPL_EVT:
       /* fixme */
+      /** M: retry when BTA_DM_DISC_CMPL_EVT is received @{ */
+      if ((pairing_cb.state == BT_BOND_STATE_BONDED) &&
+          (pairing_cb.sdp_attempts > 0) &&
+          (pairing_cb.sdp_attempts < BTIF_DM_MAX_SDP_ATTEMPTS_AFTER_PAIRING)) {
+        pairing_cb.sdp_attempts++;
+        btif_dm_get_remote_services(pairing_cb.bd_addr);
+      }
+      /** @} */
       break;
 
     case BTA_DM_SEARCH_CANCEL_CMPL_EVT:
@@ -1672,6 +1742,9 @@ static void btif_dm_upstreams_evt(uint16_t event, char* p_param) {
         btm_set_bond_type_dev(pairing_cb.bd_addr, BOND_TYPE_UNKNOWN);
         bond_state_changed((bt_status_t)p_data->bond_cancel_cmpl.result,
                            bd_addr, BT_BOND_STATE_NONE);
+        /** M: remove bond after cancelled @{*/
+        btif_dm_remove_bond(&bd_addr);
+        /** @} */
       }
       break;
 
@@ -2048,9 +2121,11 @@ static void bte_search_devices_evt(tBTA_DM_SEARCH_EVT event,
 
   /* if remote name is available in EIR, set teh flag so that stack doesnt
    * trigger RNR */
+  /** M: set the flag remt_name_not_required when remote name is in cache @{ */
   if (event == BTA_DM_INQ_RES_EVT)
     p_data->inq_res.remt_name_not_required =
-        check_eir_remote_name(p_data, NULL, NULL);
+        check_eir_remote_name(p_data, NULL, NULL) || check_cached_remote_name(p_data, NULL, NULL);
+  /** @} */
 
   btif_transfer_context(
       btif_dm_search_devices_evt, (uint16_t)event, (char*)p_data, param_len,
@@ -2169,7 +2244,12 @@ bt_status_t btif_dm_start_discovery(void) {
   tBTA_DM_INQ inq_params;
   tBTA_SERVICE_MASK services = 0;
 
-  BTIF_TRACE_EVENT("%s", __func__);
+  /** M: We should not do inquiry during bonding step @{ */
+  BTIF_TRACE_EVENT("%s pairing_cb.state:0x%x", __func__, pairing_cb.state);
+
+  if(BT_BOND_STATE_BONDING == pairing_cb.state)
+      return BT_STATUS_BUSY;
+  /** @} */
 
   /* Cleanup anything remaining on index 0 */
   do_in_main_thread(
@@ -2308,6 +2388,9 @@ bt_status_t btif_dm_cancel_bond(const RawAddress* bd_addr) {
   **  2. special handling for HID devices
   */
   if (is_bonding_or_sdp()) {
+    /** M: bug fix, clear sdp_attempts @{ */
+    pairing_cb.sdp_attempts = 0;
+    /** @} */
     if (pairing_cb.is_ssp) {
       if (pairing_cb.is_le_only) {
         BTA_DmBleSecurityGrant(*bd_addr, BTA_DM_SEC_PAIR_NOT_SPT);
@@ -2510,6 +2593,19 @@ bt_status_t btif_dm_get_adapter_property(bt_property_t* prop) {
  ******************************************************************************/
 bt_status_t btif_dm_get_remote_services(const RawAddress& remote_addr) {
   BTIF_TRACE_EVENT("%s: bd_addr=%s", __func__, remote_addr.ToString().c_str());
+
+  /** M: get services from storage for IOT devices @{*/
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if ((pairing_cb.sdp_attempts == 0) &&
+      (interop_mtk_match_addr_name(INTEROP_MTK_GET_UUIDS_FROM_STORAGE,
+                                   &remote_addr))) {
+    BTIF_TRACE_EVENT("%s: INTEROP_MTK_GET_UUIDS_FROM_STORAGE", __func__);
+    RawAddress tmp = remote_addr;
+    btif_get_remote_device_property(&tmp, BT_PROPERTY_UUIDS);
+    return BT_STATUS_SUCCESS;
+  }
+#endif
+  /** @}  */
 
   BTA_DmDiscover(remote_addr, BTA_ALL_SERVICE_MASK, bte_dm_search_services_evt,
                  true);
@@ -2883,8 +2979,14 @@ static void btif_dm_ble_auth_cmpl_evt(tBTA_DM_AUTH_CMPL* p_auth_cmpl) {
       btif_storage_remove_bonded_device(&bdaddr);
       state = BT_BOND_STATE_NONE;
     } else {
-      btif_dm_save_ble_bonding_keys();
-      btif_dm_get_remote_services_by_transport(&bd_addr, GATT_TRANSPORT_LE);
+      btif_dm_save_ble_bonding_keys(bdaddr);
+      /** M: Bug fix for smp over BR @{ */
+      BTIF_TRACE_EVENT("%s smp_over_br=%d", __func__, p_auth_cmpl->smp_over_br);
+      if(!p_auth_cmpl->smp_over_br)
+        btif_dm_get_remote_services_by_transport(&bd_addr, GATT_TRANSPORT_LE);
+      else
+        btif_dm_get_remote_services(bd_addr);
+      /** @} */
     }
   } else {
     /*Map the HCI fail reason  to  bt status  */
@@ -2964,10 +3066,8 @@ void btif_dm_get_ble_local_keys(tBTA_DM_BLE_LOCAL_KEY_MASK* p_key_mask,
   BTIF_TRACE_DEBUG("%s  *p_key_mask=0x%02x", __func__, *p_key_mask);
 }
 
-void btif_dm_save_ble_bonding_keys(void) {
+void btif_dm_save_ble_bonding_keys(RawAddress& bd_addr) {
   BTIF_TRACE_DEBUG("%s", __func__);
-
-  RawAddress bd_addr = pairing_cb.bd_addr;
 
   if (pairing_cb.ble.is_penc_key_rcvd) {
     btif_storage_add_ble_bonding_key(
@@ -3002,6 +3102,14 @@ void btif_dm_save_ble_bonding_keys(void) {
   if (pairing_cb.ble.is_lidk_key_rcvd) {
     btif_storage_add_ble_bonding_key(&bd_addr, NULL, BTIF_DM_LE_KEY_LID, 0);
   }
+/** M: Add for ble device pair on guest mode  @{ */
+  if (is_restricted_mode())
+  {
+    const char* bdstr = bd_addr.ToString().c_str();
+    btif_config_set_int(bdstr, "Restricted", 1);
+    btif_config_save();
+  }
+/** @} */
 }
 
 void btif_dm_remove_ble_bonding_keys(void) {

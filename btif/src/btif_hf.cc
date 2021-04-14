@@ -46,6 +46,20 @@
 #include "btif_util.h"
 #include "common/metrics.h"
 
+
+/** M: Change for bug fix: NE when bt on/off. @{ */
+using base::Bind;
+/** @} */
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "btif_av.h"
+#include "mediatek/include/interop_mtk.h"
+#endif
+
+/** M: Change for bug fix: check if sco is active or establishing. @{ */
+#include "mediatek/stack/btm/btm_int.h"
+/** @} */
+
 namespace bluetooth {
 namespace headset {
 
@@ -115,7 +129,14 @@ struct btif_hf_cb_t {
   int num_active;
   int num_held;
   bthf_call_state_t call_setup_state;
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+  bool is_atd_received;
+#endif
 };
+
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+long sco_disc_time = 0;
+#endif
 
 static btif_hf_cb_t btif_hf_cb[BTA_AG_MAX_NUM_CLIENTS];
 
@@ -247,6 +268,9 @@ void clear_phone_state_multihf(btif_hf_cb_t* hf_cb) {
   hf_cb->call_setup_state = BTHF_CALL_STATE_IDLE;
   hf_cb->num_active = 0;
   hf_cb->num_held = 0;
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+  hf_cb->is_atd_received = false;
+#endif
 }
 
 static void reset_control_block(btif_hf_cb_t* hf_cb) {
@@ -276,6 +300,10 @@ static bool IsSlcConnected(RawAddress* bd_addr) {
   }
   return btif_hf_cb[idx].state == BTHF_CONNECTION_STATE_SLC_CONNECTED;
 }
+
+/** M: Bug fix for avoid hfp connect collistion @{ */
+static bt_status_t connect_int(RawAddress* bd_addr, uint16_t uuid);
+/** @} */
 
 /*******************************************************************************
  *
@@ -317,14 +345,38 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
       break;
     // RFCOMM connected or failed to connect
     case BTA_AG_OPEN_EVT:
+
+      /** M: Bug fix for avoid hfp connect collision @{ */
+      //If an outoging connection starts during incomming connection procedure,
+      //We will recieve a BTA_AG_FAIL_RESOURCES by bta_ag_open_fail()
+      //Since the bta_ag state has changed to BTA_AG_OPEN_ST.
+      //Then the incomming connection is finished, we do nothing for this BTA_AG_OPEN_EVT
+      if ((p_data->open.status == BTA_AG_FAIL_RESOURCES)
+          &&(btif_hf_cb[idx].state == BTHF_CONNECTION_STATE_CONNECTED))
+      {
+          BTIF_TRACE_WARNING("%s: HFP connect collision, incomming connection first, then outoging connection", __func__);
+          break;
+      }
+      /** @} */
+
       // Check if an outoging connection is pending
       if (btif_hf_cb[idx].is_initiator) {
         CHECK_EQ(btif_hf_cb[idx].state, BTHF_CONNECTION_STATE_CONNECTING)
             << "Control block must be in connecting state when initiating";
         CHECK(!btif_hf_cb[idx].connected_bda.IsEmpty())
             << "Remote device address must not be empty when initiating";
-        CHECK_EQ(btif_hf_cb[idx].connected_bda, p_data->open.bd_addr)
-            << "Incoming message's address must match expected one";
+
+        /** M: Bug fix for avoid hfp connect collistion @{ */
+        /*CHECK_EQ(btif_hf_cb[idx].connected_bda, p_data->open.bd_addr)
+            << "Incoming message's address must match expected one";*/
+        if (btif_hf_cb[idx].connected_bda != p_data->open.bd_addr) {
+          BTIF_TRACE_DEBUG("%s: address: %s already connected", __func__,
+                  p_data->open.bd_addr.ToString().c_str());
+          btif_hf_cb[idx].is_initiator = false;
+          btif_queue_advance();
+          btif_queue_connect(UUID_SERVCLASS_AG_HANDSFREE, &(btif_hf_cb[idx].connected_bda), connect_int);
+        }
+        /** @} */
       }
       if (p_data->open.status == BTA_AG_SUCCESS) {
         // In case this is an incoming connection
@@ -336,6 +388,14 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
             ->LogHeadsetProfileRfcConnection(p_data->open.service_id);
         bt_hf_callbacks->ConnectionStateCallback(
             btif_hf_cb[idx].state, &btif_hf_cb[idx].connected_bda);
+        /** M: Bug fix for avoid a2dp connect delay @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+        if ((btif_hf_cb[idx].is_initiator) && interop_mtk_match_addr_name(
+            INTEROP_MTK_ADVANCED_A2DP_CONNECT, &(btif_hf_cb[idx].connected_bda))) {
+          btif_queue_advance();
+        }
+#endif
+      /** @} */
       } else {
         if (!btif_hf_cb[idx].is_initiator) {
           // Ignore remote initiated open failures
@@ -380,9 +440,18 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
       btif_hf_cb[idx].state = BTHF_CONNECTION_STATE_SLC_CONNECTED;
       bt_hf_callbacks->ConnectionStateCallback(btif_hf_cb[idx].state,
                                                &btif_hf_cb[idx].connected_bda);
+      /** M: Bug fix for avoid a2dp connect delay @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      if ((btif_hf_cb[idx].is_initiator) && !interop_mtk_match_addr_name(
+            INTEROP_MTK_ADVANCED_A2DP_CONNECT, &(btif_hf_cb[idx].connected_bda))) {
+        btif_queue_advance();
+      }
+#else
       if (btif_hf_cb[idx].is_initiator) {
         btif_queue_advance();
       }
+#endif
+      /** @} */
       break;
 
     case BTA_AG_AUDIO_OPEN_EVT:
@@ -391,6 +460,10 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
       break;
 
     case BTA_AG_AUDIO_CLOSE_EVT:
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+      sco_disc_time = time(NULL);
+      BTIF_TRACE_DEBUG("sco disc mark sco_disc_time = %ld",sco_disc_time);
+#endif
       bt_hf_callbacks->AudioStateCallback(BTHF_AUDIO_STATE_DISCONNECTED,
                                           &btif_hf_cb[idx].connected_bda);
       break;
@@ -411,6 +484,12 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
     /* Java needs to send OK/ERROR for these commands */
     case BTA_AG_AT_BLDN_EVT:
     case BTA_AG_AT_D_EVT:
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+      /** M: Modified for report received ATD at command to AVRCP @{ */
+      if(BTA_AG_AT_D_EVT == event)
+          btif_hf_cb[idx].is_atd_received = true;
+      /** @} */
+#endif
       bt_hf_callbacks->DialCallCallback(
           (event == BTA_AG_AT_D_EVT) ? p_data->val.str : (char*)"",
           &btif_hf_cb[idx].connected_bda);
@@ -601,9 +680,27 @@ static void bte_hf_evt(tBTA_AG_EVT event, tBTA_AG* p_data) {
  ******************************************************************************/
 static bt_status_t connect_int(RawAddress* bd_addr, uint16_t uuid) {
   CHECK_BTHF_INIT();
+
+  /** M: Change for bug fix: check if HFP is establishing. @{ */
+  for (int i = 0; i < btif_max_hf_clients; ++i) {
+    if (((btif_hf_cb[i].state == BTHF_CONNECTION_STATE_CONNECTING)) &&
+        (!bd_addr || *bd_addr == btif_hf_cb[i].connected_bda)) {
+      BTIF_TRACE_ERROR("%s: device %s is already connecting", __func__,
+         bd_addr->ToString().c_str());
+      /** M: Handle connection fail case @{ */
+      btif_queue_advance();
+      /** @} */
+      return BT_STATUS_BUSY;
+    }
+  }
+  /** @} */
+
   if (is_connected(bd_addr)) {
     BTIF_TRACE_WARNING("%s: device %s is already connected", __func__,
                        bd_addr->ToString().c_str());
+    /** M: Handle connection fail case @{ */
+    btif_queue_advance();
+    /** @} */
     return BT_STATUS_BUSY;
   }
   btif_hf_cb_t* hf_cb = nullptr;
@@ -625,6 +722,9 @@ static bt_status_t connect_int(RawAddress* bd_addr, uint16_t uuid) {
     BTIF_TRACE_WARNING(
         "%s: Cannot connect %s: maximum %d clients already connected", __func__,
         bd_addr->ToString().c_str(), btif_max_hf_clients);
+    /** M: Handle connection fail case @{ */
+    btif_queue_advance();
+    /** @} */
     return BT_STATUS_BUSY;
   }
   hf_cb->state = BTHF_CONNECTION_STATE_CONNECTING;
@@ -656,7 +756,10 @@ bool IsCallIdle() {
 
   for (int i = 0; i < btif_max_hf_clients; ++i) {
     if ((btif_hf_cb[i].call_setup_state != BTHF_CALL_STATE_IDLE) ||
-        ((btif_hf_cb[i].num_held + btif_hf_cb[i].num_active) > 0))
+        ((btif_hf_cb[i].num_held + btif_hf_cb[i].num_active) > 0)
+        /** M: Change for bug fix: check if sco is active or establishing. @{ */
+        || btm_is_sco_active_or_establishing_by_bdaddr(btif_hf_cb[i].connected_bda))
+        /** @} */
       return false;
   }
 
@@ -724,6 +827,11 @@ bt_status_t HeadsetInterface::Init(Callbacks* callbacks, int max_hf_clients,
   BTIF_TRACE_DEBUG(
       "%s: btif_hf_features=%zu, max_hf_clients=%d, inband_ringing_enabled=%d",
       __func__, btif_hf_features, btif_max_hf_clients, inband_ringing_enabled);
+
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+  sco_disc_time = 0;
+#endif
+
   bt_hf_callbacks = callbacks;
   for (btif_hf_cb_t& hf_cb : btif_hf_cb) {
     reset_control_block(&hf_cb);
@@ -934,6 +1042,20 @@ bt_status_t HeadsetInterface::CindResponse(int svc, int num_active,
     return BT_STATUS_FAIL;
   }
   tBTA_AG_RES_DATA ag_res = {};
+
+/** M: Bug fix for avoid specail carkit (baojun730) no voice  @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr_name(INTEROP_MTK_HFP_NO_USE_CIND,
+      bd_addr)) {
+    if (!IsSlcConnected(bd_addr))
+    {
+      num_active = 0;
+      num_held = 0;
+    }
+  }
+#endif
+/** @} */
+
   // per the errata 2043, call=1 implies atleast one call is in progress
   // (active/held), see:
   // https://www.bluetooth.org/errata/errata_view.cfm?errata_id=2043
@@ -1057,6 +1179,13 @@ bt_status_t HeadsetInterface::PhoneStateChange(
     return BT_STATUS_FAIL;
   }
   const btif_hf_cb_t& control_block = btif_hf_cb[idx];
+
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+  /** M: Modified for report received ATD at command to AVRCP @{ */
+  btif_hf_cb[idx].is_atd_received = false;
+  /** @} */
+#endif
+
   if (!IsSlcConnected(bd_addr)) {
     LOG(WARNING) << ": SLC not connected for " << *bd_addr;
     return BT_STATUS_NOT_READY;
@@ -1070,6 +1199,23 @@ bt_status_t HeadsetInterface::PhoneStateChange(
               << ", num_held=" << num_held;
     return BT_STATUS_SUCCESS;
   }
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr_name(INTEROP_MTK_HFP_DEALY_OPEN_SCO,
+      &(btif_hf_cb[idx].connected_bda))) {
+    /*Requested by customer to broaden the check conditions for SCO delaying.*/
+    if ((btif_hf_cb[idx].call_setup_state == BTHF_CALL_STATE_IDLE) &&
+           ((call_setup_state != BTHF_CALL_STATE_IDLE) ||
+            (num_active == 1 &&
+             btif_hf_cb[idx].num_active == 0 &&
+             btif_hf_cb[idx].num_held == 0))) {
+      BTIF_TRACE_DEBUG("phone_state_change: Delay creating SCO for call!!!");
+      usleep(500 * 1000);
+      BTIF_TRACE_DEBUG("phone_state_change: awake!!!");
+    }
+  }
+#endif
+
   LOG(INFO) << __func__ << ": idx=" << idx << ", addr=" << *bd_addr
             << ", active_bda=" << active_bda << ", num_active=" << num_active
             << ", prev_num_active" << control_block.num_active
@@ -1078,6 +1224,22 @@ bt_status_t HeadsetInterface::PhoneStateChange(
             << ", call_state=" << dump_hf_call_state(call_setup_state)
             << ", prev_call_state="
             << dump_hf_call_state(control_block.call_setup_state);
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr_name(INTEROP_MTK_HFP_NO_REPORT_CIEV_7_2,
+      &(btif_hf_cb[idx].connected_bda))) {
+      if (num_active == 0 && control_block.num_active == 1 &&
+          num_held == 1 && control_block.num_held == 0 &&
+          call_setup_state == BTHF_CALL_STATE_INCOMING &&
+          control_block.call_setup_state == BTHF_CALL_STATE_INCOMING)
+      {
+          LOG(INFO) << __func__ << "Held call states changed not process. old: "<< control_block.num_held << "new:" << num_held;
+          UpdateCallStates(&btif_hf_cb[idx], num_active, num_held, call_setup_state);
+          return BT_STATUS_SUCCESS;
+      }
+  }
+#endif
+
   tBTA_AG_RES res = 0xFF;
   bt_status_t status = BT_STATUS_SUCCESS;
   bool active_call_updated = false;
@@ -1085,6 +1247,12 @@ bt_status_t HeadsetInterface::PhoneStateChange(
   /* if all indicators are 0, send end call and return */
   if (num_active == 0 && num_held == 0 &&
       call_setup_state == BTHF_CALL_STATE_IDLE) {
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+      if((control_block.num_active+control_block.num_held > 0)||(control_block.call_setup_state != call_setup_state)){
+          sco_disc_time = time(NULL);
+          BTIF_TRACE_DEBUG("state change mark sco_disc_time = %ld",sco_disc_time);
+      }
+#endif
     VLOG(1) << __func__ << ": call ended";
     BTA_AgResult(control_block.handle, BTA_AG_END_CALL_RES,
                  tBTA_AG_RES_DATA::kEmpty);
@@ -1153,7 +1321,16 @@ bt_status_t HeadsetInterface::PhoneStateChange(
           case BTHF_CALL_STATE_DIALING:
           case BTHF_CALL_STATE_ALERTING:
             if (num_active > control_block.num_active) {
-              res = BTA_AG_OUT_CALL_CONN_RES;
+                /** M: Change for Multiparty call.if one hold call and another active,we still need to send active call indicator @{ */
+                if(num_held > 0)
+                {
+                    tBTA_AG_RES_DATA ag_res = {};
+                    ag_res.ind.id = BTA_AG_IND_CALL;
+                    ag_res.ind.value = num_active;
+                    BTA_AgResult(control_block.handle, BTA_AG_IND_RES_ON_DEMAND, ag_res);
+                }
+                /** @} */
+                res = BTA_AG_OUT_CALL_CONN_RES;
             } else
               res = BTA_AG_CALL_CANCEL_RES;
             break;
@@ -1330,7 +1507,14 @@ void HeadsetInterface::Cleanup() {
 #else
     btif_disable_service(BTA_HSP_SERVICE_ID);
 #endif
-    bt_hf_callbacks = nullptr;
+
+    /** M: Change for bug fix: NE when bt on/off. @{ */
+    do_in_jni_thread(Bind([] () {
+      bt_hf_callbacks = nullptr;
+      BTIF_TRACE_EVENT("clean up bt_hf_callbacks");
+    }));
+    /** @} */
+
   }
 }
 
@@ -1414,6 +1598,47 @@ Interface* GetInterface() {
   VLOG(0) << __func__;
   return HeadsetInterface::GetInstance();
 }
+
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+/** M: Change for AVRCP: check if received atd at command. @{ */
+/******************************************************************************
+*
+ *
+ * Function         btif_hf_is_ATD_Received
+ *
+ * Description      get true if reveiced ATD at command
+ *
+ * Returns          true if ATD received
+ *
+ ******************************************************************************/
+bool isATDReceived() {
+  if (!bt_hf_callbacks) return false;
+
+  for (int i = 0; i < btif_max_hf_clients; ++i) {
+    if (btif_hf_cb[i].is_atd_received == true)
+      return true;
+  }
+
+  return false;
+}
+/** @} */
+
+/** M: Change for AVRCP: get latest sco disconnect time. @{ */
+/******************************************************************************
+*
+ *
+ * Function         btif_hf_get_sco_disc_time
+ *
+ * Description      get time the latest sco disconnect
+ *
+ * Returns          time sco disconnect
+ *
+ ******************************************************************************/
+long getScoDiscTime() {
+  return sco_disc_time;
+}
+/** @} */
+#endif
 
 }  // namespace headset
 }  // namespace bluetooth

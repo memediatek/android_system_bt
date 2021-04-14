@@ -40,5 +40,8 @@ typedef struct btsnooz_header_t {
 // Initializes btsnoop memory logging and registers
 void btif_debug_btsnoop_init(void);
 
+// Cleanup btsnoop memory logging and registers
+void btif_debug_btsnoop_cleanup(void);
+
 // Writes btsnoop data base64 encoded to fd
 void btif_debug_btsnoop_dump(int fd);

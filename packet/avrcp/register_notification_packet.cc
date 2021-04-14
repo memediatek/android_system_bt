@@ -155,7 +155,11 @@ size_t RegisterNotificationResponseBuilder::size() const {
       data_size = 4;
       break;
     case Event::PLAYER_APPLICATION_SETTING_CHANGED:
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+      data_size = 2 * player_setting_.num_attr + 1;
+#else
       LOG(FATAL) << "Player Application Notification Not Implemented";
+#endif
       break;
     case Event::NOW_PLAYING_CONTENT_CHANGED:
       data_size = 0;
@@ -202,6 +206,16 @@ bool RegisterNotificationResponseBuilder::Serialize(
       break;
     }
     case Event::PLAYER_APPLICATION_SETTING_CHANGED:
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+    {
+      AddPayloadOctets1(pkt, player_setting_.num_attr);
+
+      for (int i = 0; i < player_setting_.num_attr; i++) {
+        AddPayloadOctets1(pkt, player_setting_.attr_ids[i]);
+        AddPayloadOctets1(pkt, player_setting_.attr_values[i]);
+      }
+    }
+#endif
       break;  // No additional data
     case Event::NOW_PLAYING_CONTENT_CHANGED:
       break;  // No additional data
@@ -229,6 +243,11 @@ bool RegisterNotificationResponseBuilder::Serialize(
 }
 
 Event RegisterNotificationRequest::GetEventRegistered() const {
+  /** M: device send no EventID cause NE @{ */
+  uint8_t length = VendorPacket::GetParameterLength();
+  if (length == 0)
+    return static_cast<Event>(0);
+  /** @} */
   auto value = *(begin() + VendorPacket::kMinSize());
   return static_cast<Event>(value);
 }

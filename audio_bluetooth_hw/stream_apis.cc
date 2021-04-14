@@ -34,6 +34,8 @@ using ::android::bluetooth::audio::BluetoothAudioPortOut;
 using ::android::bluetooth::audio::utils::GetAudioParamString;
 using ::android::bluetooth::audio::utils::ParseAudioParams;
 
+static uint8_t audio_a2dp_suspended_flag = 0;
+
 namespace {
 
 constexpr unsigned int kMinimumDelayMs = 100;
@@ -213,11 +215,13 @@ static int out_set_parameters(struct audio_stream* stream,
                 << " stream param stopped";
       if (out->bluetooth_output_.GetState() != BluetoothStreamState::DISABLED) {
         out->frames_rendered_ = 0;
-        out->bluetooth_output_.Stop();
+        out->bluetooth_output_.Suspend();
+        audio_a2dp_suspended_flag = 1;
       }
     } else {
       LOG(INFO) << __func__ << ": state=" << out->bluetooth_output_.GetState()
                 << " stream param standby";
+      audio_a2dp_suspended_flag = 0;
       if (out->bluetooth_output_.GetState() == BluetoothStreamState::DISABLED) {
         out->bluetooth_output_.SetState(BluetoothStreamState::STANDBY);
       }
@@ -370,6 +374,13 @@ static ssize_t out_write(struct audio_stream_out* stream, const void* buffer,
   if (out->bluetooth_output_.GetState() != BluetoothStreamState::STARTED) {
     LOG(INFO) << __func__ << ": state=" << out->bluetooth_output_.GetState()
               << " first time bytes=" << bytes;
+    /** M: Don't trigger start req while A2dpSuspended flag is true @{ */
+    if(audio_a2dp_suspended_flag){
+      LOG(INFO) << __func__ << ": Ignore start req while A2dpSuspended flag is true";
+      usleep(kBluetoothDefaultOutputBufferMs/2 * 1000);
+      return bytes;
+    }
+    /** @} */
     lock.unlock();
     if (stream->resume(stream)) {
       LOG(ERROR) << __func__ << ": state=" << out->bluetooth_output_.GetState()
@@ -600,6 +611,8 @@ int adev_open_output_stream(struct audio_hw_device* dev,
                             struct audio_stream_out** stream_out,
                             const char* address __unused) {
   *stream_out = nullptr;
+  auto* bluetooth_dev = reinterpret_cast<bluetooth_audio_dev*>(dev);
+  std::unique_lock<std::mutex> lock(*bluetooth_dev->mutex_);
   auto* out = new BluetoothStreamOut;
   if (!out->bluetooth_output_.SetUp(devices)) {
     delete out;
@@ -648,8 +661,14 @@ int adev_open_output_stream(struct audio_hw_device* dev,
       samples_per_ticks(kBluetoothDefaultOutputBufferMs, out->sample_rate_, 1);
   out->frames_rendered_ = 0;
   out->frames_presented_ = 0;
-
+  /** M: Set last_write_time_us_ to 0 when initialization @{ */
+  out->last_write_time_us_ = 0LL;
+  /** @} */
   *stream_out = &out->stream_out_;
+  bluetooth_dev->output = out;
+  /** M: Set audio_a2dp_suspended_flag to 0 when initialication @{ */
+  audio_a2dp_suspended_flag = 0;
+  /** @} */
   LOG(INFO) << __func__ << ": state=" << out->bluetooth_output_.GetState() << ", sample_rate=" << out->sample_rate_
             << ", channels=" << StringPrintf("%#x", out->channel_mask_) << ", format=" << out->format_
             << ", frames=" << out->frames_count_;
@@ -659,17 +678,25 @@ int adev_open_output_stream(struct audio_hw_device* dev,
 void adev_close_output_stream(struct audio_hw_device* dev,
                               struct audio_stream_out* stream) {
   auto* out = reinterpret_cast<BluetoothStreamOut*>(stream);
-  LOG(VERBOSE) << __func__ << ": state=" << out->bluetooth_output_.GetState()
-               << ", stopping";
-  if (out->bluetooth_output_.GetState() != BluetoothStreamState::DISABLED) {
-    out->frames_rendered_ = 0;
-    out->frames_presented_ = 0;
-    out->bluetooth_output_.Stop();
+  auto* bluetooth_dev = reinterpret_cast<bluetooth_audio_dev*>(dev);
+  std::unique_lock<std::mutex> lock(*bluetooth_dev->mutex_);
+  {
+  /** M: Add lock to avoid block in out_write @{ */
+    std::unique_lock<std::mutex> lock(out->mutex_);
+  /** @} */
+    LOG(VERBOSE) << __func__ << ": state=" << out->bluetooth_output_.GetState()
+                 << ", stopping";
+    if (out->bluetooth_output_.GetState() != BluetoothStreamState::DISABLED) {
+      out->frames_rendered_ = 0;
+      out->frames_presented_ = 0;
+      out->bluetooth_output_.Stop();
+    }
+    out->bluetooth_output_.TearDown();
+    LOG(VERBOSE) << __func__ << ": state=" << out->bluetooth_output_.GetState()
+                 << ", stopped";
   }
-  out->bluetooth_output_.TearDown();
-  LOG(VERBOSE) << __func__ << ": state=" << out->bluetooth_output_.GetState()
-               << ", stopped";
   delete out;
+  bluetooth_dev->output = nullptr;
 }
 
 size_t adev_get_input_buffer_size(const struct audio_hw_device* dev,

@@ -39,6 +39,10 @@
 #define BTIF_HH_KEYSTATE_MASK_CAPSLOCK 0x02
 #define BTIF_HH_KEYSTATE_MASK_SCROLLLOCK 0x04
 
+/**M: duplicate event send will lead current higher than target @{*/
+#define BTIF_HH_OUTPUT_REPORT_SIZE       2
+/**@}*/
+
 #define BTIF_HH_MAX_POLLING_ATTEMPTS 10
 #define BTIF_HH_POLLING_SLEEP_DURATION_US 5000
 
@@ -71,6 +75,9 @@ typedef struct {
   fixed_queue_t* get_rpt_id_queue;
   uint8_t get_rpt_snt;
   bool local_vup;  // Indicated locally initiated VUP
+  /**M: duplicate event send will lead current higher than target @{*/
+  uint8_t last_output_rpt_data[BTIF_HH_OUTPUT_REPORT_SIZE];
+  /**@}*/
 } btif_hh_device_t;
 
 /* Control block to maintain properties of devices */

@@ -132,6 +132,10 @@ static void l2c_csm_closed(tL2C_CCB* p_ccb, uint16_t event, void* p_data) {
   uint16_t local_cid = p_ccb->local_cid;
   tL2CA_DISCONNECT_IND_CB* disconnect_ind;
   tL2CA_CONNECT_CFM_CB* connect_cfm;
+  /** M: Bug Fix for sdp no ccb to use @{*/
+  uint16_t psm;
+  /** @}*/
+
 
   if (p_ccb->p_rcb == NULL) {
     L2CAP_TRACE_ERROR("L2CAP - LCID: 0x%04x  st: CLOSED  evt: %s p_rcb == NULL",
@@ -289,7 +293,21 @@ static void l2c_csm_closed(tL2C_CCB* p_ccb, uint16_t event, void* p_data) {
       break;
 
     case L2CEVT_L2CA_DISCONNECT_REQ: /* Upper wants to disconnect */
+      /** M: Bug Fix for sdp no ccb to use @{*/
+      psm = p_ccb->p_rcb->psm;
+      L2CAP_TRACE_API(
+          "L2CAP - Upper Request Disconnect psm: 0x%04x", psm);
+      /** @}*/
       l2cu_release_ccb(p_ccb);
+      /** M: Bug Fix for sdp no ccb to use @{*/
+      if (psm == SDP_PSM) {
+        tL2CA_DISCONNECT_CFM_CB* disconnect_cfm =
+            p_ccb->p_rcb->api.pL2CA_DisconnectCfm_Cb;
+
+        if (disconnect_cfm)
+          (*disconnect_cfm)(local_cid, L2CAP_DISC_OK);
+      }
+      /** @}*/
       break;
   }
 }
@@ -524,6 +542,8 @@ static void l2c_csm_w4_l2cap_connect_rsp(tL2C_CCB* p_ccb, uint16_t event,
        * to disconnect for normal reason */
       p_ccb->chnl_state = CST_CLOSED;
       if ((p_ccb->flags & CCB_FLAG_NO_RETRY) || !p_data ||
+           (p_ccb->p_rcb->psm == BT_PSM_AVCTP) ||
+           (p_ccb->p_rcb->psm == BT_PSM_RFCOMM) ||
           (*((uint8_t*)p_data) != HCI_ERR_PEER_USER)) {
         L2CAP_TRACE_API(
             "L2CAP - Calling Disconnect_Ind_Cb(), CID: 0x%04x  No Conf Needed",
@@ -1096,7 +1116,10 @@ static void l2c_csm_open(tL2C_CCB* p_ccb, uint16_t event, void* p_data) {
 
     case L2CEVT_L2CA_CONFIG_REQ: /* Upper layer config req   */
       p_ccb->chnl_state = CST_CONFIG;
-      p_ccb->config_done &= ~CFG_DONE_MASK;
+      /** M: only maskoff IB_CFG_DONE flag, after local rsp sent, goes into OPEN state @{*/
+      // p_ccb->config_done &= ~CFG_DONE_MASK;
+      p_ccb->config_done &= ~IB_CFG_DONE;
+      /** @} */
       l2cu_process_our_cfg_req(p_ccb, (tL2CAP_CFG_INFO*)p_data);
       l2cu_send_peer_config_req(p_ccb, (tL2CAP_CFG_INFO*)p_data);
       alarm_set_on_mloop(p_ccb->l2c_ccb_timer, L2CAP_CHNL_CFG_TIMEOUT_MS,
@@ -1174,6 +1197,9 @@ static void l2c_csm_w4_l2cap_disconnect_rsp(tL2C_CCB* p_ccb, uint16_t event,
     case L2CEVT_L2CAP_DISCONNECT_REQ: /* Peer disconnect request  */
       l2cu_send_peer_disc_rsp(p_ccb->p_lcb, p_ccb->remote_id, p_ccb->local_cid,
                               p_ccb->remote_cid);
+      /* drop the buffers queued for this channel */
+      L2CA_FlushChannel(local_cid, L2CAP_FLUSH_CHANS_ALL);
+
       l2cu_release_ccb(p_ccb);
       if (disconnect_cfm) {
         L2CAP_TRACE_API("L2CAP - Calling DisconnectCfm_Cb(), CID: 0x%04x",
@@ -1184,6 +1210,8 @@ static void l2c_csm_w4_l2cap_disconnect_rsp(tL2C_CCB* p_ccb, uint16_t event,
 
     case L2CEVT_LP_DISCONNECT_IND: /* Link was disconnected */
     case L2CEVT_TIMEOUT:           /* Timeout */
+      /* drop the buffers queued for this channel */
+      L2CA_FlushChannel(local_cid, L2CAP_FLUSH_CHANS_ALL);
       l2cu_release_ccb(p_ccb);
       if (disconnect_cfm) {
         L2CAP_TRACE_API("L2CAP - Calling DisconnectCfm_Cb(), CID: 0x%04x",

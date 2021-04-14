@@ -129,6 +129,10 @@ class ConnectionHandler {
   std::map<uint8_t, std::shared_ptr<Device>> device_map_;
   // TODO (apanicke): Replace the features with a class that has individual
   // fields.
+  /** M: define a map for save opened avrcp device, and remove it
+      when device is connected (device put in device_map_. @{ */
+  std::map<uint8_t, std::shared_ptr<RawAddress>> pre_dev_map_;
+  /** @}*/
   std::map<RawAddress, uint16_t> feature_map_;
 
   static ConnectionHandler* instance_;

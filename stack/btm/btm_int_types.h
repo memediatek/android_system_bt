@@ -357,6 +357,9 @@ typedef struct {
   uint16_t hci_handle;    /* HCI Handle                   */
   bool is_orig;           /* true if the originator       */
   bool rem_bd_known;      /* true if remote BD addr known */
+  /** M: Bug Fix for create sco collision @{ */
+  bool is_collision;      /* true if collision happened */
+  /** @} */
 
 } tSCO_CONN;
 
@@ -564,6 +567,14 @@ typedef struct {
 
   tBTM_SEC_BLE ble;
   tBTM_LE_CONN_PRAMS conn_params;
+
+/** M: Do not change link key type when smp over br @{ */
+#define BTM_SEC_SMP_NO_PAIR_PENDING 0x00
+#define BTM_SEC_SMP_PAIR_PENDING 0x01
+#define BTM_SEC_LINK_KEY_TYPE_UNAUTH 0x02
+#define BTM_SEC_LINK_KEY_TYPE_AUTH   0x04
+  uint8_t sec_smp_pair_pending;
+/** @} */
 
 #if (BTM_DISC_DURING_RS == TRUE)
 #define BTM_SEC_RS_NOT_PENDING 0 /* Role Switch not in progress */

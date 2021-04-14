@@ -49,6 +49,22 @@
 #include "osi/include/allocator.h"
 #include "osi/include/osi.h"
 #include "osi/include/properties.h"
+#include "avrcp_service.h"
+#include "bta/av/bta_av_int.h"
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#include "mediatek/include/mtk_btif_av.h"
+#endif
+
+#if defined(MTK_VND_A2DP_PKT_LEN) && (MTK_VND_A2DP_PKT_LEN == TRUE)
+#include "btm_api.h"
+#include "mediatek/include/mtk_btif_av.h"
+#endif
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
 
 /*****************************************************************************
  *  Constants & Macros
@@ -57,6 +73,15 @@ static const std::string kBtifAvSourceServiceName = "Advanced Audio Source";
 static const std::string kBtifAvSinkServiceName = "Advanced Audio Sink";
 static constexpr int kDefaultMaxConnectedAudioDevices = 1;
 static constexpr tBTA_AV_HNDL kBtaHandleUnknown = 0;
+extern tBTA_AV_CB bta_av_cb;
+/** M: multi thread access peer_id2bta_handle_,@{ */
+//as std:map non thread safe, and lock to protect.//
+static std::mutex peer_id2bta_handle_lock_;
+/** @} */
+
+/** M: add protect for BtifAvSource::peers_ . @{ */
+std::mutex btifavsource_peer_lock_;
+/** @} */
 
 /*****************************************************************************
  *  Local type definitions
@@ -452,6 +477,16 @@ class BtifAvSource {
       peer_ready_promise.set_value();
       return true;  // Nothing has changed
     }
+    /** M: IOT device has pop sound when doing music pause,set standbytime as 3s @{ */
+    #if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      if (!peer_address.IsEmpty() && interop_mtk_match_addr_name(
+                       INTEROP_MTK_A2DP_SET_STANDBY_TIME, &peer_address)) {
+        osi_property_set("persist.vendor.bluetooth.a2dpstandbytime", "3000");
+      } else {
+        osi_property_set("persist.vendor.bluetooth.a2dpstandbytime", "500");
+      }
+    #endif
+    /** @} */
     if (peer_address.IsEmpty()) {
       BTIF_TRACE_EVENT("%s: peer address is empty, shutdown the Audio source",
                        __func__);
@@ -989,7 +1024,14 @@ void BtifAvSource::Cleanup() {
   do_in_main_thread(FROM_HERE, base::Bind(&btif_a2dp_source_cleanup));
 
   btif_disable_service(BTA_A2DP_SOURCE_SERVICE_ID);
+  /** M:  Acquire the lock. @{ */
+  // CleanupAllPeers() erase the peers maybe cause
+  // NE during accessing the peers.
+  LOG_INFO(LOG_TAG, "%s: acquire the lock.", __func__);
+  std::lock_guard<std::mutex> lock(btifavsource_peer_lock_);
+  /** @} */
   CleanupAllPeers();
+  LOG_INFO(LOG_TAG, "%s: release the lock.", __func__);
 
   callbacks_ = nullptr;
   enabled_ = false;
@@ -1041,8 +1083,26 @@ BtifAvPeer* BtifAvSource::FindOrCreatePeer(const RawAddress& peer_address,
         __PRETTY_FUNCTION__, peer_address.ToString().c_str());
     return nullptr;
   }
+  if (bta_handle == kBtaHandleUnknown) {
+    //we need to check in bta_cb
+    for (uint8_t index = 0; index < BTA_AV_NUM_STRS; index++) {
+        tBTA_AV_SCB* p_scb = bta_av_cb.p_scb[index];
+        if(!p_scb) continue;
+        if(p_scb->PeerAddress() == peer_address){
+          APPL_TRACE_WARNING("%s:  find for %s == peer_addr", __func__,
+                             peer_address.ToString().c_str());
+          bta_handle = p_scb->hndl;
+          break;
+        }
+    }
+  }
   // Get the BTA Handle (if known)
   if (bta_handle == kBtaHandleUnknown) {
+    /** M: multi thread access peer_id2bta_handle_,@{ */
+    //as std:map non thread safe, and lock to protect.//
+    LOG_ERROR(LOG_TAG, "%s: acquire the lock.", __func__);
+    std::lock_guard<std::mutex> lock(peer_id2bta_handle_lock_);
+    /** @} */
     auto it = peer_id2bta_handle_.find(peer_id);
     if (it != peer_id2bta_handle_.end()) {
       bta_handle = it->second;
@@ -1122,6 +1182,11 @@ void BtifAvSource::RegisterAllBtaHandles() {
 }
 
 void BtifAvSource::DeregisterAllBtaHandles() {
+  /** M: multi thread access peer_id2bta_handle_,@{ */
+  //as std:map non thread safe, and lock to protect.//
+  LOG_ERROR(LOG_TAG, "%s: acquire the lock.", __func__);
+  std::lock_guard<std::mutex> lock(peer_id2bta_handle_lock_);
+  /** @} */
   for (auto it : peer_id2bta_handle_) {
     tBTA_AV_HNDL bta_handle = it.second;
     BTA_AvDeregister(bta_handle);
@@ -1342,6 +1407,12 @@ void BtifAvStateMachine::StateIdle::OnEnter() {
     btif_a2dp_on_idle();
   }
 
+  /** M: Bug fix for not disconnect avrcp when a2dp diconnected @{ */
+  if (bluetooth::avrcp::AvrcpService::Get() != nullptr) {
+    bluetooth::avrcp::AvrcpService::Get()->DisconnectDevice(peer_.PeerAddress());
+  }
+  /** @} */
+
   // Reset the active peer if this was the active peer and
   // the Idle state was reentered
   if (peer_.IsActivePeer() && peer_.CanBeDeleted()) {
@@ -1402,6 +1473,8 @@ bool BtifAvStateMachine::StateIdle::ProcessEvent(uint32_t event, void* p_data) {
     case BTIF_AV_CONNECT_REQ_EVT:
     case BTA_AV_PENDING_EVT: {
       bool can_connect = true;
+      /** M: Bug Fix: Store the BT on/off status. @{ */
+      char bt_state[PROPERTY_VALUE_MAX] = {0};
       peer_.SetSelfInitiatedConnection(event == BTIF_AV_CONNECT_REQ_EVT);
       // Check whether connection is allowed
       if (peer_.IsSink()) {
@@ -1411,6 +1484,15 @@ bool BtifAvStateMachine::StateIdle::ProcessEvent(uint32_t event, void* p_data) {
         can_connect = btif_av_sink.AllowedToConnect(peer_.PeerAddress());
         if (!can_connect) sink_disconnect_src(peer_.PeerAddress());
       }
+
+      /** M: Bug Fix: Check if the BT is closing. @{ */
+      // The value '0' means BT is off and '1' means on.
+      osi_property_get("persist.vendor.bluetooth.state", bt_state, "1");
+      if (0 == strncmp(bt_state, "0", 1)) {
+        //BT is closing, ignore the connect req.
+        can_connect = false;
+      }
+
       if (!can_connect) {
         BTIF_TRACE_ERROR(
             "%s: Cannot connect to peer %s: too many connected "
@@ -1665,11 +1747,23 @@ bool BtifAvStateMachine::StateOpening::ProcessEvent(uint32_t event,
           uint8_t peer_handle =
               btif_rc_get_connected_peer_handle(peer_.PeerAddress());
           if (peer_handle != BTRC_HANDLE_NONE) {
-            BTA_AvCloseRc(peer_handle);
+/** M: Change for bug fix: Do not close avrcp after sdp of audio sink failed. @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+            if (!((p_bta_data->open.status == BTA_AV_FAIL_SDP) &&
+                interop_mtk_match_addr_name(
+                    INTEROP_MTK_AUDIO_SINK_SDP_FAIL_NOT_DISC_AVRCP, &peer_.PeerAddress())))
+#endif
+/** @} */
+              BTA_AvCloseRc(peer_handle);
           }
         }
         state = BTAV_CONNECTION_STATE_DISCONNECTED;
         av_state = BtifAvStateMachine::kStateIdle;
+        /** M: Bug fix for a2dp connect fail @{ */
+        if (peer_.SelfInitiatedConnection()) {
+          btif_queue_advance();
+        }
+        /** @} */
       }
 
       // Report the connection state to the application
@@ -1686,9 +1780,11 @@ bool BtifAvStateMachine::StateOpening::ProcessEvent(uint32_t event,
         // Bring up AVRCP connection as well
         BTA_AvOpenRc(peer_.BtaHandle());
       }
-      if (peer_.SelfInitiatedConnection()) {
+      /** M: Bug fix for a2dp connect fail @{ */
+      if ((p_bta_data->open.status == BTA_AV_SUCCESS) && peer_.SelfInitiatedConnection()) {
         btif_queue_advance();
       }
+      /** @} */
     } break;
 
     case BTIF_AV_SINK_CONFIG_REQ_EVT: {
@@ -1783,6 +1879,22 @@ void BtifAvStateMachine::StateOpened::OnEnter() {
                        peer_.PeerAddress().ToString().c_str());
     }
   }
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  /** M: Bug fix for special carkit not send start after suspend @{ */
+  BtifAvPeer* peer = btif_av_find_active_peer();
+  if (peer == nullptr) {
+    BTIF_TRACE_WARNING("%s: No active peer found", __func__);
+    return;
+  }
+  if (interop_mtk_match_addr_name(
+      INTEROP_MTK_SKIP_REMOTE_SUSPEND_FLAG, &(peer->PeerAddress()))) {
+      BTIF_TRACE_DEBUG("%s: Peer %s : flags=%s are cleared", __func__,
+                   peer->PeerAddress().ToString().c_str(),
+                   peer->FlagsToString().c_str());
+      peer->ClearFlags(BtifAvPeer::kFlagRemoteSuspend);
+  }
+  /** @} */
+#endif
 }
 
 void BtifAvStateMachine::StateOpened::OnExit() {
@@ -1848,6 +1960,21 @@ bool BtifAvStateMachine::StateOpened::ProcessEvent(uint32_t event,
         should_suspend = true;
       }
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      /** M:Bug fix for SRC and SNK try to start A2DP at the same time when DUT is SRC @{ */
+      if (interop_mtk_match_addr_name(
+          INTEROP_MTK_SKIP_REMOTE_START_REQ, &(peer_.PeerAddress()))) {
+        if((p_av->start.status == BTA_SUCCESS) &&
+           peer_.IsSink() && !p_av->start.initiator &&
+           peer_.CheckFlags(BtifAvPeer::kFlagPendingStart)) {
+          LOG(WARNING) << __PRETTY_FUNCTION__ << ": Peer " << peer_.PeerAddress()
+                       << " : Ignore START as remote initiated";
+          return false;
+        }
+      }
+      /** @} */
+#endif
+
       // If peer is A2DP Source, do ACK commands to audio HAL and start media task
       if (peer_.IsSink() && btif_a2dp_on_started(peer_.PeerAddress(), &p_av->start)) {
         // Only clear pending flag after acknowledgement
@@ -1855,7 +1982,12 @@ bool BtifAvStateMachine::StateOpened::ProcessEvent(uint32_t event,
       }
 
       // Remain in Open state if status failed
-      if (p_av->start.status != BTA_AV_SUCCESS) return false;
+      if (p_av->start.status != BTA_AV_SUCCESS) {
+        /** M: Bug fix for START fail error handle @{ */
+        BTA_AvDisconnect(peer_.PeerAddress());
+        /** @} */
+        return false;
+      }
 
       if (peer_.IsSource() && peer_.IsActivePeer()) {
         // Remove flush state, ready for streaming
@@ -1875,6 +2007,11 @@ bool BtifAvStateMachine::StateOpened::ProcessEvent(uint32_t event,
       if (peer_.IsSource()) {
         BTA_AvCloseRc(peer_.BtaHandle());
       }
+      /** M: Bug fix for not disconnect avrcp when a2dp diconnected @{ */
+      if (bluetooth::avrcp::AvrcpService::Get() != nullptr) {
+        bluetooth::avrcp::AvrcpService::Get()->DisconnectDevice(peer_.PeerAddress());
+      }
+      /** @} */
 
       // Inform the application that we are disconnecting
       btif_report_connection_state(peer_.PeerAddress(),
@@ -1919,6 +2056,13 @@ bool BtifAvStateMachine::StateOpened::ProcessEvent(uint32_t event,
         peer_.ClearFlags(BtifAvPeer::kFlagPendingStart);
         btif_a2dp_command_ack(A2DP_CTRL_ACK_FAILURE);
       }
+      /** M: When reconfig success, call setup_codec for updating codec parameter @{ */
+      if (peer_.IsActivePeer() && (p_av->reconfig.status == BTA_AV_SUCCESS)) {
+        btif_a2dp_source_setup_codec(peer_.PeerAddress());
+        LOG_INFO(LOG_TAG, "%s : Peer %s : Reconfig success, do setup_codec",
+                           __PRETTY_FUNCTION__, peer_.PeerAddress().ToString().c_str());
+      }
+      /** @} */
       break;
 
     case BTIF_AV_CONNECT_REQ_EVT: {
@@ -2040,6 +2184,11 @@ bool BtifAvStateMachine::StateStarted::ProcessEvent(uint32_t event,
       if (peer_.IsSource()) {
         BTA_AvCloseRc(peer_.BtaHandle());
       }
+      /** M: Bug fix for not disconnect avrcp when a2dp diconnected @{ */
+      if (bluetooth::avrcp::AvrcpService::Get() != nullptr) {
+        bluetooth::avrcp::AvrcpService::Get()->DisconnectDevice(peer_.PeerAddress());
+      }
+      /** @} */
 
       // Inform the application that we are disconnecting
       btif_report_connection_state(peer_.PeerAddress(),
@@ -2116,12 +2265,14 @@ bool BtifAvStateMachine::StateStarted::ProcessEvent(uint32_t event,
                peer_.FlagsToString().c_str());
 
       peer_.SetFlags(BtifAvPeer::kFlagPendingStop);
-
       // AVDTP link is closed
       if (peer_.IsActivePeer()) {
         btif_a2dp_on_stopped(nullptr);
       }
-
+      //* M: tell avrcp status changed {@ */
+      if (bluetooth::avrcp::AvrcpService::Get() != nullptr)
+        bluetooth::avrcp::AvrcpService::Get()->MetadataChanged(nullptr,BTAV_AUDIO_STATE_STOPPED);
+      /** @} */
       // Inform the application that we are disconnected
       btif_report_connection_state(peer_.PeerAddress(),
                                    BTAV_CONNECTION_STATE_DISCONNECTED);
@@ -2136,6 +2287,16 @@ bool BtifAvStateMachine::StateStarted::ProcessEvent(uint32_t event,
     case BTA_AV_OFFLOAD_START_RSP_EVT:
       btif_a2dp_on_offload_started(peer_.PeerAddress(), p_av->status);
       break;
+
+    /** M: Bug fix for rare case connecting collision @{ */
+    case BTIF_AV_CONNECT_REQ_EVT: {
+      BTIF_TRACE_WARNING("%s: Peer %s : Ignore %s for same device",
+                         __PRETTY_FUNCTION__,
+                         peer_.PeerAddress().ToString().c_str(),
+                         BtifAvEvent::EventName(event).c_str());
+      btif_queue_advance();
+      } break;
+    /** @} */
 
       CHECK_RC_EVENT(event, (tBTA_AV*)p_data);
 
@@ -2153,7 +2314,10 @@ bool BtifAvStateMachine::StateStarted::ProcessEvent(uint32_t event,
 void BtifAvStateMachine::StateClosing::OnEnter() {
   BTIF_TRACE_DEBUG("%s: Peer %s", __PRETTY_FUNCTION__,
                    peer_.PeerAddress().ToString().c_str());
-
+  //* M: tell avrcp status changed {@ */
+  if (bluetooth::avrcp::AvrcpService::Get() != nullptr)
+    bluetooth::avrcp::AvrcpService::Get()->MetadataChanged(nullptr, BTAV_AUDIO_STATE_STOPPED);
+  /** @} */
   if (peer_.IsActivePeer()) {
     if (peer_.IsSink()) {
       // Immediately stop transmission of frames
@@ -2191,6 +2355,12 @@ bool BtifAvStateMachine::StateClosing::ProcessEvent(uint32_t event,
       break;
 
     case BTA_AV_CLOSE_EVT:
+      /** M: Bug fix for not disconnect avrcp when a2dp diconnected @{ */
+      if (bluetooth::avrcp::AvrcpService::Get() != nullptr) {
+        bluetooth::avrcp::AvrcpService::Get()->DisconnectDevice(peer_.PeerAddress());
+      }
+      /** @} */
+
       // Inform the application that we are disconnecting
       btif_report_connection_state(peer_.PeerAddress(),
                                    BTAV_CONNECTION_STATE_DISCONNECTED);
@@ -2316,7 +2486,10 @@ static void btif_report_audio_state(const RawAddress& peer_address,
                                     btav_audio_state_t state) {
   LOG_INFO(LOG_TAG, "%s: peer_address=%s state=%d", __func__,
            peer_address.ToString().c_str(), state);
-
+  /** M:report to avrcp @{ */
+  if (bluetooth::avrcp::AvrcpService::Get() != nullptr)
+    bluetooth::avrcp::AvrcpService::Get()->MetadataChanged(nullptr, state);
+  /** }@ */
   if (btif_av_source.Enabled()) {
     do_in_jni_thread(FROM_HERE,
                      base::Bind(btif_av_source.Callbacks()->audio_state_cb,
@@ -2617,6 +2790,22 @@ static bt_status_t init_src(
     btav_source_callbacks_t* callbacks, int max_connected_audio_devices,
     std::vector<btav_a2dp_codec_config_t> codec_priorities) {
   BTIF_TRACE_EVENT("%s", __func__);
+  /** M: Bug Fix: set the state as 1 when a2dp service is started. @{ */
+  osi_property_set("persist.vendor.bluetooth.state", "1");
+  /** @} */
+
+  /** M: Firmware inform host to adjust a2dp packet length as 2-DH5/3-DH5 by RSSI.
+   ** Then host will modify a2dp pacekt length of SBC codec
+   ** after receive vendor specific event. @{ */
+#if defined(MTK_VND_A2DP_PKT_LEN) && (MTK_VND_A2DP_PKT_LEN == TRUE)
+  BTM_RegisterForVSEvents(btif_av_change_pkt_len_callback, true);
+#endif
+  /** @} */
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+    BtAvServiceDelayTimer::btif_create_av_domain_timer();
+#endif
+
   return btif_av_source.Init(callbacks, max_connected_audio_devices,
                              codec_priorities);
 }
@@ -2645,6 +2834,8 @@ static bt_status_t connect_int(RawAddress* peer_address, uint16_t uuid) {
                    peer_address->ToString().c_str(), uuid);
 
   BtifAvPeer* peer = nullptr;
+  LOG_INFO(LOG_TAG, "%s: Set peer is lock ",__func__);
+  std::lock_guard<std::mutex> lock(btifavsource_peer_lock_);
   if (uuid == UUID_SERVCLASS_AUDIO_SOURCE) {
     peer = btif_av_source.FindOrCreatePeer(*peer_address, kBtaHandleUnknown);
     if (peer == nullptr) {
@@ -2657,6 +2848,7 @@ static bt_status_t connect_int(RawAddress* peer_address, uint16_t uuid) {
     }
   }
   peer->StateMachine().ProcessEvent(BTIF_AV_CONNECT_REQ_EVT, nullptr);
+  LOG_INFO(LOG_TAG, "%s:Peer is unlock ",__func__);
   return BT_STATUS_SUCCESS;
 }
 
@@ -2709,6 +2901,12 @@ static bt_status_t src_connect_sink(const RawAddress& peer_address) {
     BTIF_TRACE_WARNING("%s: BTIF AV Source is not enabled", __func__);
     return BT_STATUS_NOT_READY;
   }
+
+  /** M: Change for bug fix: avoid HFP and A2DP collision. @{ */
+  // Make sure connect HFP firstly:
+  // sleep 20ms to avoid the collision for HFP and A2DP.
+  usleep(20 * 1000);
+  /** @} */
 
   RawAddress peer_address_copy(peer_address);
   return btif_queue_connect(UUID_SERVCLASS_AUDIO_SOURCE, &peer_address_copy,
@@ -2821,6 +3019,13 @@ static bt_status_t codec_config_src(
 
 static void cleanup_src(void) {
   BTIF_TRACE_EVENT("%s", __func__);
+  /** M: Firmware inform host to adjust a2dp packet length as 2-DH5/3-DH5 by RSSI.
+   ** Then host will modify a2dp pacekt length of SBC codec
+   ** after receive vendor specific event. @{ */
+#if defined(MTK_VND_A2DP_PKT_LEN) && (MTK_VND_A2DP_PKT_LEN == TRUE)
+  BTM_RegisterForVSEvents(btif_av_change_pkt_len_callback, false);
+#endif
+  /** @} */
   do_in_main_thread(FROM_HERE, base::Bind(&BtifAvSource::Cleanup,
                                           base::Unretained(&btif_av_source)));
 }
@@ -2950,6 +3155,21 @@ bool btif_av_stream_started_ready(void) {
   return ready;
 }
 
+/** M: Check whether the A2DP stream is in started state @{ */
+bool btif_av_check_started_state(void) {
+  BtifAvPeer* peer = btif_av_find_active_peer();
+  if (peer == nullptr) {
+    BTIF_TRACE_WARNING("%s: No active peer found", __func__);
+    return false;
+  }
+  int state = peer->StateMachine().StateId();
+  bool ready = (state == BtifAvStateMachine::kStateStarted);
+  LOG_INFO(LOG_TAG, "%s: Peer %s : state=%d ready=%d", __func__,
+           peer->PeerAddress().ToString().c_str(), state, ready);
+  return ready;
+}
+/** @} */
+
 static void btif_av_source_dispatch_sm_event(const RawAddress& peer_address,
                                              btif_av_sm_event_t event) {
   BtifAvEvent btif_av_event(event, nullptr, 0);
@@ -3059,6 +3279,24 @@ bool btif_av_is_connected(void) {
                    (connected) ? "connected" : "not connected");
   return connected;
 }
+
+/** M: Bug fix for Block AVRCP key if A2DP is not connected @{ */
+/**
+ * Checks if av in idle state
+ *
+ * @returns bool
+ */
+bool btif_av_is_idle(void)
+{
+  BtifAvPeer* peer = btif_av_find_active_peer();
+  if (peer == nullptr) {
+    BTIF_TRACE_WARNING("%s: No active peer found", __func__);
+    return false;
+  }
+  int state = peer->StateMachine().StateId();
+  return (state == BtifAvStateMachine::kStateIdle);
+}
+/** @} */
 
 uint8_t btif_av_get_peer_sep(void) {
   BtifAvPeer* peer = btif_av_find_active_peer();
@@ -3221,3 +3459,15 @@ bool btif_av_is_a2dp_offload_enabled() {
 bool btif_av_is_peer_silenced(const RawAddress& peer_address) {
   return btif_av_source.IsPeerSilenced(peer_address);
 }
+
+/** M:third party apk not rsp play status, check from the audio status @{ */
+void btif_av_meta_data_changed(const void* pmetadata) {
+  const bluetooth::avrcp::source_metadata_t* source_metadata =
+                   (const bluetooth::avrcp::source_metadata_t*)pmetadata;
+  BTIF_TRACE_WARNING("%s: track_count=%d", __func__,(int)source_metadata->track_count);
+  //in this case BTAV_AUDIO_STATE_STOPPED is not used in avrcpservice
+  if (bluetooth::avrcp::AvrcpService::Get() != nullptr)
+    bluetooth::avrcp::AvrcpService::Get()->MetadataChanged(
+                                           source_metadata, BTAV_AUDIO_STATE_STOPPED);
+}
+/* }@ */

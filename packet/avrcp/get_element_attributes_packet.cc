@@ -100,9 +100,11 @@ bool GetElementAttributesResponseBuilder::AddAttributeEntry(
     entry.resize(remaining_space);
   }
 
-  if (entry.empty()) {
-    return false;
-  }
+  /** M: If we receive empty value, we also rsp to peer @{ */
+  //if (entry.empty()) {
+  //  return false;
+  //}
+  /** @} */
 
   entries_.insert(entry);
   return true;

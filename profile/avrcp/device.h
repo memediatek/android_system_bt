@@ -41,6 +41,18 @@
 #include "profile/avrcp/media_id_map.h"
 #include "raw_address.h"
 
+/** M: Define Avrcp max folder depth @{ */
+constexpr int MAX_FOLDER_DEPTH = 255;
+/** @} */
+
+#ifndef CALL_SCO_KEY_FEATURE
+#define CALL_SCO_KEY_FEATURE TRUE
+#endif
+
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+#define SCO_DISCONNECT_TIMER 5
+#endif
+
 namespace bluetooth {
 namespace avrcp {
 
@@ -89,6 +101,16 @@ class Device {
    * Returns true if the current device is active.
    */
   bool IsActive() const;
+
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+  /**
+   * Returns true if
+   * 1. key received in TIMER after sco disconnect
+   * 2. there is call setup incoming/outgoing
+   * 3. received ATD cmd and not in call setup state
+   */
+  bool isDropKey();
+#endif
 
   /**
    * Register the interfaces that the device uses to get information. If the
@@ -255,6 +277,33 @@ class Device {
   // SET VOLUME
   virtual void SetVolume(int8_t volume);
 
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+  virtual void SettingPacketHandler(uint8_t label,
+      std::shared_ptr<VendorPacket> pkt);
+
+  virtual void SendSettingChange(bool setting_changed);
+
+  virtual void AppSettingChangeNotificationResponse(uint8_t label,
+      bool interim, BtrcPlayerSettings player_setting);
+
+  virtual void ListAppSettingAttrsResponse(
+      uint8_t label, std::vector<BtrcPlayerAttr> attrs);
+
+  virtual void ListAppSettingValuesResponse(
+      uint8_t label, std::vector<uint8_t> values);
+
+  virtual void GetAppSettingValuesResponse(
+      uint8_t label, BtrcPlayerSettings values);
+
+  virtual void SetAppSettingValuesResponse(
+      uint8_t label, BtrcStatus rsp_status);
+
+  virtual void GetAppSettingAttTxtResponse(
+      uint8_t label, std::vector<BtrcPlayerSettingText> attrs_txt);
+
+  virtual void GetAppSettingValueTxtResponse(
+      uint8_t label, std::vector<BtrcPlayerSettingText> attrs_values_txt);
+#endif
   /**
    * This function is called by Avrcp::ConnectionHandler to signify that
    * the remote device was disconnected.
@@ -266,6 +315,8 @@ class Device {
    * disconnecting browsing then we should be fully disconnecting the device).
    */
   void DeviceDisconnected();
+
+  void SendFastForwardRewindStatus(bool interim, PlayState state);
 
   friend std::ostream& operator<<(std::ostream& out, const Device& c);
 
@@ -310,11 +361,20 @@ class Device {
   Notification avail_players_changed_ = Notification(false, 0);
   Notification uids_changed_ = Notification(false, 0);
 
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+  Notification player_app_setting_changed_ = Notification(false, 0);
+#endif
+
   MediaIdMap vfs_ids_;
   MediaIdMap now_playing_ids_;
 
   uint32_t play_pos_interval_ = 0;
-
+  /** M: Store number items in browse folder & current Folder names @{ */
+  // store number items in browse folder
+  uint32_t num_items_in_br_folder_ = 0;
+  // store current Folder names
+  std::string mFolderName_[MAX_FOLDER_DEPTH];
+  /** @} */
   SongInfo last_song_info_;
   PlayStatus last_play_status_;
 
@@ -327,7 +387,14 @@ class Device {
   // Labels used for messages currently in flight.
   std::set<uint8_t> active_labels_;
 
+  //fast forward/rewind IOT carkit fix
+  PlayState fast_forward_rewind_status_ = PlayState::ERROR;
+
   int8_t volume_ = -1;
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+  /** M: Ignore key after sco disc. */
+  bool key_drop_ = false;
+#endif
   DISALLOW_COPY_AND_ASSIGN(Device);
 };
 

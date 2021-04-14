@@ -137,6 +137,15 @@ void avct_l2c_connect_ind_cback(const RawAddress& bd_addr, uint16_t lcid,
 
   /* if result ok, proceed with connection */
   if (result == L2CAP_CONN_OK) {
+    /** M: to avoid avctp collision, make sure the collision can be checked @{ */
+    tAVCT_CCB* p_ccb = &avct_cb.ccb[0];
+    for (int i = 0; i < AVCT_NUM_CONN; i++, p_ccb++) {
+      if (p_ccb && p_ccb->allocated && (p_ccb->p_lcb == NULL) &&
+              (p_ccb->cc.role == AVCT_ACP) && (avct_lcb_has_pid(p_lcb, p_ccb->cc.pid) == NULL)) {
+        p_ccb->p_lcb = p_lcb;
+      }
+    }
+    /** @} */
     /* store LCID */
     p_lcb->ch_lcid = lcid;
 

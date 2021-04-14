@@ -257,6 +257,13 @@ typedef struct {
 #define BTA_HH_LE_SCPS_NOTIFY_SPT 0x01
 #define BTA_HH_LE_SCPS_NOTIFY_ENB 0x02
   uint8_t scps_notify; /* scan refresh supported/notification enabled */
+
+  /** M: Bug fix for HOGP connection taking too long time @{ */
+  uint16_t min_conn_int;
+  uint16_t max_conn_int;
+  uint16_t slave_latency;
+  uint16_t supervision_tout;
+  /** @} */
 #endif
 
   bool security_pending;

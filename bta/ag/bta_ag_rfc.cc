@@ -375,13 +375,15 @@ void bta_ag_rfc_do_close(tBTA_AG_SCB* p_scb,
         FROM_HERE,
         base::Bind(&bta_ag_sm_execute_by_handle, bta_ag_scb_to_idx(p_scb),
                    BTA_AG_RFC_CLOSE_EVT, tBTA_AG_DATA::kEmpty));
+  /** M: We need to cancel sdp before free db @{ */
+  }
 
     /* Cancel SDP if it had been started. */
-    /*
     if(p_scb->p_disc_db)
     {
         (void)SDP_CancelServiceSearch (p_scb->p_disc_db);
+        bta_ag_free_db(p_scb, tBTA_AG_DATA::kEmpty);
     }
-    */
-  }
+  /** @} */
+
 }

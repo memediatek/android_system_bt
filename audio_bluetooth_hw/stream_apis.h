@@ -62,6 +62,14 @@ struct BluetoothStreamOut {
   mutable std::mutex mutex_;
 };
 
+struct bluetooth_audio_dev{
+  // Important: device must be first as an audio_hw_device* may be cast to
+  // bluetooth_audio_dev* when the type is implicitly known.
+  struct audio_hw_device device;
+  mutable std::mutex *mutex_;
+  BluetoothStreamOut* output;
+};
+
 int adev_open_output_stream(struct audio_hw_device* dev,
                             audio_io_handle_t handle, audio_devices_t devices,
                             audio_output_flags_t flags,

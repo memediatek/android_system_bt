@@ -35,3 +35,9 @@
 #include "avrcp/set_absolute_volume.h"
 #include "avrcp/set_addressed_player.h"
 #include "avrcp/set_browsed_player.h"
+
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+#include "mediatek/packet/avrcp/list_application_setting_packet.h"
+#include "mediatek/packet/avrcp/application_setting_values_packet.h"
+#include "mediatek/packet/avrcp/application_setting_text_values_packet.h"
+#endif

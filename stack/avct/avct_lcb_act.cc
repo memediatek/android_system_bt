@@ -219,17 +219,21 @@ void avct_lcb_open_ind(tAVCT_LCB* p_lcb, tAVCT_LCB_EVT* p_data) {
 
   for (i = 0; i < AVCT_NUM_CONN; i++, p_ccb++) {
     /* if ccb allocated and */
-    if (p_ccb->allocated) {
+    /** M: to avoid avctp collision, make sure the collision can be checked @{ */
+    if (p_ccb->allocated && (p_ccb->p_lcb == p_lcb)) {
       /* if bound to this lcb send connect confirm event */
-      if (p_ccb->p_lcb == p_lcb) {
+      if (p_ccb->cc.role == AVCT_INT) {
+    /** @} */
         bind = true;
         L2CA_SetTxPriority(p_lcb->ch_lcid, L2CAP_CHNL_PRIORITY_HIGH);
         p_ccb->cc.p_ctrl_cback(avct_ccb_to_idx(p_ccb), AVCT_CONNECT_CFM_EVT, 0,
                                &p_lcb->peer_addr);
       }
       /* if unbound acceptor and lcb doesn't already have a ccb for this PID */
-      else if ((p_ccb->p_lcb == NULL) && (p_ccb->cc.role == AVCT_ACP) &&
-               (avct_lcb_has_pid(p_lcb, p_ccb->cc.pid) == NULL)) {
+      /** M: to avoid avctp collision, make sure the collision can be checked @{ */
+      else if ((p_ccb->cc.role == AVCT_ACP) &&
+               avct_lcb_has_pid(p_lcb, p_ccb->cc.pid)) {
+      /** @} */
         /* bind ccb to lcb and send connect ind event */
         bind = true;
         p_ccb->p_lcb = p_lcb;

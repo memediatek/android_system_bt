@@ -118,6 +118,7 @@ cc_library_static {
         "libaudio-a2dp-hw-utils",
         "lib-bt-packets",
         "libbt-audio-hal-interface",
+        "libbt-mtk_cust",
     ],
     cflags: [
         "-DBUILDCFG",

@@ -902,10 +902,16 @@ static void gap_config_ind(uint16_t l2cap_cid, tL2CAP_CFG_INFO* p_cfg) {
   } else
     local_mtu_size = L2CAP_MTU_SIZE;
 
-  if ((!p_cfg->mtu_present) || (p_cfg->mtu > local_mtu_size)) {
+  if (!p_cfg->mtu_present) {
+    p_ccb->rem_mtu_size = L2CAP_DEFAULT_MTU < local_mtu_size ?
+                          L2CAP_DEFAULT_MTU : local_mtu_size;
+  } else if (p_cfg->mtu > local_mtu_size) {
     p_ccb->rem_mtu_size = local_mtu_size;
-  } else
+  } else {
     p_ccb->rem_mtu_size = p_cfg->mtu;
+  }
+  LOG(WARNING) << StringPrintf("%s: mtu_present %d, p_cfg->mtu %d, rem_mtu_size %d",
+                             __func__, p_cfg->mtu_present, p_cfg->mtu, p_ccb->rem_mtu_size);
 
   /* For now, always accept configuration from the other side */
   p_cfg->flush_to_present = false;

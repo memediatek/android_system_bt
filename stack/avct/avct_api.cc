@@ -82,11 +82,15 @@ void AVCT_Register(uint16_t mtu, UNUSED_ATTR uint16_t mtu_br,
   if (mtu_br < AVCT_MIN_BROWSE_MTU) mtu_br = AVCT_MIN_BROWSE_MTU;
   avct_cb.mtu_br = mtu_br;
 
+/** M: Bug fix for adjust avctp log level by conf file  @{ */
+/*
 #if defined(AVCT_INITIAL_TRACE_LEVEL)
   avct_cb.trace_level = AVCT_INITIAL_TRACE_LEVEL;
 #else
   avct_cb.trace_level = BT_TRACE_LEVEL_NONE;
 #endif
+*/
+/** @} */
 
   if (mtu < AVCT_MIN_CONTROL_MTU) mtu = AVCT_MIN_CONTROL_MTU;
   /* store mtu */
@@ -439,3 +443,21 @@ uint16_t AVCT_MsgReq(uint8_t handle, uint8_t label, uint8_t cr, BT_HDR* p_msg) {
   }
   return result;
 }
+
+/** M: Bug fix for adjust avctp log level by conf file  @{ */
+/*******************************************************************************
+ *
+ * Function         AVCT_SetTraceLevel
+ *
+ * Description      This function sets the trace level for AVCT. If called with
+ *                  a value of 0xFF, it simply reads the current trace level.
+ *
+ * Returns          the new (current) trace level
+ *
+ ******************************************************************************/
+uint8_t AVCT_SetTraceLevel(uint8_t new_level) {
+  if (new_level != 0xFF) avct_cb.trace_level = new_level;
+
+  return (avct_cb.trace_level);
+}
+/** @} */

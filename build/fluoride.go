@@ -18,6 +18,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc"
+	"android/soong/bluetooth/mediatek"
 )
 
 func init() {
@@ -58,6 +59,12 @@ func globalDefaults(ctx android.BaseContext) ([]string, []string) {
 	} else {
 		cflags = append(cflags, "-DHAS_NO_BDROID_BUILDCFG")
 	}
+
+	/** M: Load Mediatek defined build config @{ */
+	mtkCflags, mtkIncludeDirs := mediatekBluetooth.MtkGlobalDefaults(ctx)
+	cflags = append(cflags, mtkCflags...)
+	includeDirs = append(includeDirs, mtkIncludeDirs...)
+	/** @} */
 
 	return cflags, includeDirs
 }

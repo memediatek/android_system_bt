@@ -42,6 +42,10 @@
 #include "l2cdefs.h"
 #include "osi/include/osi.h"
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+
 static bool l2c_link_send_to_lower(tL2C_LCB* p_lcb, BT_HDR* p_buf,
                                    tL2C_TX_COMPLETE_CB_INFO* p_cbi);
 
@@ -90,10 +94,23 @@ bool l2c_link_hci_conn_req(const RawAddress& bd_addr) {
     if (no_links) {
       if (!btm_dev_support_switch(bd_addr))
         p_lcb->link_role = HCI_ROLE_SLAVE;
-      else
+      else {
         p_lcb->link_role = l2cu_get_conn_role(p_lcb);
+        /** M: for devices in IOT list, accept connection as master @{*/
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+        if (interop_mtk_match_addr_name(INTEROP_MTK_ACCEPT_CONN_AS_MASTER, &bd_addr))
+          p_lcb->link_role = HCI_ROLE_MASTER;
+#endif
+        /** @}  */
+      }
+    } else {
+        /** M: for devices in IOT list, accept connection as slave @{*/
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      if (interop_mtk_match_addr_name(INTEROP_MTK_ACCEPT_CONN_AS_SLAVE, &bd_addr))
+        p_lcb->link_role = HCI_ROLE_SLAVE;
+#endif
+        /** @} */
     }
-
     /* Tell the other side we accept the connection */
     btsnd_hcic_accept_conn(bd_addr, p_lcb->link_role);
 
@@ -412,7 +429,10 @@ bool l2c_link_hci_disc_comp(uint16_t handle, uint8_t reason) {
        */
       if (p_lcb->transport == BT_TRANSPORT_LE) {
         btm_acl_removed(p_lcb->remote_bd_addr, p_lcb->transport);
-      } else {
+      }
+      /** M: for LE link, it is also needed to release fixed channels */
+      // } else {
+      {
 #if (L2CAP_NUM_FIXED_CHNLS > 0)
         /* If we are going to re-use the LCB without dropping it, release all
         fixed channels
@@ -441,7 +461,40 @@ bool l2c_link_hci_disc_comp(uint16_t handle, uint8_t reason) {
             p_lcb->p_fixed_ccbs[xx] = NULL;
           }
         }
+
+        /** M: re-init lcb parameters before reusing  @{ */
+        p_lcb->link_flush_tout = 0xFFFF;
+        p_lcb->idle_timeout    = l2cb.idle_timeout;
+        /* timer should be cancelled here,or the lcb maybe released at timer timeout */
+        alarm_cancel(p_lcb->l2c_lcb_timer);
+        /** @} */
 #endif
+        /** M: add back link quota and round_robin_unacked  @{ */
+        if (p_lcb->sent_not_acked > 0) {
+          if (p_lcb->transport == BT_TRANSPORT_LE) {
+            l2cb.controller_le_xmit_window += p_lcb->sent_not_acked;
+            if (l2cb.controller_le_xmit_window > l2cb.num_lm_ble_bufs)
+              l2cb.controller_le_xmit_window = l2cb.num_lm_ble_bufs;
+            if (p_lcb->link_xmit_quota == 0) {
+              if (l2cb.ble_round_robin_unacked > p_lcb->sent_not_acked)
+                l2cb.ble_round_robin_unacked -= p_lcb->sent_not_acked;
+              else
+                l2cb.ble_round_robin_unacked = 0;
+            }
+          } else {
+            l2cb.controller_xmit_window += p_lcb->sent_not_acked;
+            if (l2cb.controller_xmit_window > l2cb.num_lm_acl_bufs)
+              l2cb.controller_xmit_window = l2cb.num_lm_acl_bufs;
+            if (p_lcb->link_xmit_quota == 0) {
+              if (l2cb.round_robin_unacked > p_lcb->sent_not_acked)
+                l2cb.round_robin_unacked -= p_lcb->sent_not_acked;
+              else
+                l2cb.round_robin_unacked = 0;
+            }
+          }
+          p_lcb->sent_not_acked = 0;
+        }
+        /** @} */
       }
       if (p_lcb->transport == BT_TRANSPORT_LE) {
         if (l2cu_create_conn_le(p_lcb))
@@ -685,7 +738,9 @@ void l2c_link_adjust_allocation(void) {
 
   /* First, count the links */
   for (yy = 0, p_lcb = &l2cb.lcb_pool[0]; yy < MAX_L2CAP_LINKS; yy++, p_lcb++) {
-    if (p_lcb->in_use) {
+    /** M: only BR links should be counted here @{ */
+    if (p_lcb->in_use && p_lcb->transport == BT_TRANSPORT_BR_EDR) {
+    /** @} */
       if (p_lcb->acl_priority == L2CAP_PRIORITY_HIGH)
         num_hipri_links++;
       else
@@ -709,7 +764,9 @@ void l2c_link_adjust_allocation(void) {
   /* If each low priority link cannot have at least one buffer */
   if (num_lowpri_links > low_quota) {
     l2cb.round_robin_quota = low_quota;
-    qq = qq_remainder = 1;
+    /** M: left 0  @{ */
+    qq = qq_remainder = 0;
+    /** @} */
   }
   /* If each low priority link can have at least one buffer */
   else if (num_lowpri_links > 0) {
@@ -722,7 +779,9 @@ void l2c_link_adjust_allocation(void) {
   else {
     l2cb.round_robin_quota = 0;
     l2cb.round_robin_unacked = 0;
-    qq = qq_remainder = 1;
+    /** M: left 0  @{ */
+    qq = qq_remainder = 0;
+    /** @} */
   }
 
   L2CAP_TRACE_EVENT(
@@ -732,7 +791,9 @@ void l2c_link_adjust_allocation(void) {
 
   /* Now, assign the quotas to each link */
   for (yy = 0, p_lcb = &l2cb.lcb_pool[0]; yy < MAX_L2CAP_LINKS; yy++, p_lcb++) {
-    if (p_lcb->in_use) {
+    /** M: only BR links should be counted here @{ */
+    if (p_lcb->in_use && p_lcb->transport == BT_TRANSPORT_BR_EDR) {
+    /** @} */
       if (p_lcb->acl_priority == L2CAP_PRIORITY_HIGH) {
         p_lcb->link_xmit_quota = high_pri_link_quota;
       } else {

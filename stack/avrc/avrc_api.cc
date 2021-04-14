@@ -32,6 +32,7 @@
 #include "btu.h"
 #include "osi/include/fixed_queue.h"
 #include "osi/include/osi.h"
+#include "osi/include/properties.h"
 
 /*****************************************************************************
  *  Global data
@@ -203,11 +204,14 @@ void avrc_start_cmd_timer(uint8_t handle, uint8_t label, uint8_t msg_mask) {
   param->label = label;
   param->msg_mask = msg_mask;
 
-  AVRC_TRACE_DEBUG("AVRC: starting timer (handle=0x%02x, label=0x%02x)", handle,
+  /** M: Bug fix: Check alarm before use it. @{ */
+  if (avrc_cb.ccb_int[handle].tle != NULL) {
+  /** @} */
+    AVRC_TRACE_DEBUG("AVRC: starting timer (handle=0x%02x, label=0x%02x)", handle,
                    label);
-
-  alarm_set_on_mloop(avrc_cb.ccb_int[handle].tle, AVRC_CMD_TOUT_MS,
+    alarm_set_on_mloop(avrc_cb.ccb_int[handle].tle, AVRC_CMD_TOUT_MS,
                      avrc_process_timeout, param);
+  }
 }
 
 /******************************************************************************
@@ -1043,6 +1047,10 @@ uint16_t AVRC_Open(uint8_t* p_handle, tAVRC_CONN_CB* p_ccb,
 uint16_t AVRC_Close(uint8_t handle) {
   AVRC_TRACE_DEBUG("%s handle:%d", __func__, handle);
   avrc_flush_cmd_q(handle);
+  /** M: Bug fix for avrcp fd leak. @{ */
+  alarm_free(avrc_cb.ccb_int[handle].tle);
+  avrc_cb.ccb_int[handle].tle = NULL;
+  /** @} */
   return AVCT_RemoveConn(handle);
 }
 
@@ -1114,26 +1122,39 @@ uint16_t AVRC_MsgReq(uint8_t handle, uint8_t label, uint8_t ctype,
   AVRC_TRACE_DEBUG("%s handle = %u label = %u ctype = %u len = %d", __func__,
                    handle, label, ctype, p_pkt->len);
 
+  /** M: Handle for PTS AVRCP/TG/RCR/BV-02-C AVRCP/TG/RCR/BV-04-C */
+  bool is_new_avrcp = osi_property_get_bool("persist.bluetooth.enablenewavrcp", true);
+  AVRC_TRACE_DEBUG("%s event = 0x%x, p_pkt->layer_specific =0x%x p_pkt->offset =0x%x is_new_avrcp=%d",
+      __func__, p_pkt->event, p_pkt->layer_specific, p_pkt->offset, is_new_avrcp);
+
   if (ctype >= AVRC_RSP_NOT_IMPL) cr = AVCT_RSP;
 
   if (p_pkt->event == AVRC_OP_VENDOR) {
-    /* add AVRCP Vendor Dependent headers */
-    p_start = ((uint8_t*)(p_pkt + 1) + p_pkt->offset);
-    p_pkt->offset -= AVRC_VENDOR_HDR_SIZE;
-    p_pkt->len += AVRC_VENDOR_HDR_SIZE;
-    p_data = (uint8_t*)(p_pkt + 1) + p_pkt->offset;
-    *p_data++ = (ctype & AVRC_CTYPE_MASK);
-    *p_data++ = (AVRC_SUB_PANEL << AVRC_SUBTYPE_SHIFT);
-    *p_data++ = AVRC_OP_VENDOR;
-    AVRC_CO_ID_TO_BE_STREAM(p_data, AVRC_CO_METADATA);
 
-    /* Check if this is a AVRC_PDU_REQUEST_CONTINUATION_RSP */
-    if (cr == AVCT_CMD) {
-      msg_mask |= AVRC_MSG_MASK_IS_VENDOR_CMD;
+    if (is_new_avrcp) {
+      p_start = (uint8_t*)(p_pkt + 1) + p_pkt->offset + AVRC_VENDOR_HDR_SIZE;
+      if (cr == AVCT_CMD) {
+        msg_mask |= AVRC_MSG_MASK_IS_VENDOR_CMD;
+      }
+    } else {
+      /* add AVRCP Vendor Dependent headers */
+      p_start = ((uint8_t*)(p_pkt + 1) + p_pkt->offset);
+      p_pkt->offset -= AVRC_VENDOR_HDR_SIZE;
+      p_pkt->len += AVRC_VENDOR_HDR_SIZE;
+      p_data = (uint8_t*)(p_pkt + 1) + p_pkt->offset;
+      *p_data++ = (ctype & AVRC_CTYPE_MASK);
+      *p_data++ = (AVRC_SUB_PANEL << AVRC_SUBTYPE_SHIFT);
+      *p_data++ = AVRC_OP_VENDOR;
+      AVRC_CO_ID_TO_BE_STREAM(p_data, AVRC_CO_METADATA);
 
-      if ((*p_start == AVRC_PDU_REQUEST_CONTINUATION_RSP) ||
-          (*p_start == AVRC_PDU_ABORT_CONTINUATION_RSP)) {
-        msg_mask |= AVRC_MSG_MASK_IS_CONTINUATION_RSP;
+      /* Check if this is a AVRC_PDU_REQUEST_CONTINUATION_RSP */
+      if (cr == AVCT_CMD) {
+        msg_mask |= AVRC_MSG_MASK_IS_VENDOR_CMD;
+
+        if ((*p_start == AVRC_PDU_REQUEST_CONTINUATION_RSP) ||
+            (*p_start == AVRC_PDU_ABORT_CONTINUATION_RSP)) {
+          msg_mask |= AVRC_MSG_MASK_IS_CONTINUATION_RSP;
+          }
       }
     }
   } else if (p_pkt->event == AVRC_OP_PASS_THRU) {
@@ -1236,6 +1257,11 @@ uint16_t AVRC_MsgReq(uint8_t handle, uint8_t label, uint8_t ctype,
     p_pkt->layer_specific = (label << 8) | (p_pkt->layer_specific & 0xFF);
 
     /* Enqueue the command */
+    if (avrc_cb.ccb_int[handle].cmd_q == NULL) {
+      AVRC_TRACE_ERROR("%s cmd_q empty queue", __func__);
+      return AVRC_FAIL;
+    } else
+    /** @} */
     fixed_queue_enqueue(avrc_cb.ccb_int[handle].cmd_q, p_pkt);
     return AVRC_SUCCESS;
   }

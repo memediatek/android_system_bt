@@ -79,7 +79,10 @@ uint8_t bta_hh_find_cb(const RawAddress& bda) {
 
   /* if no active device match, find a spot for it */
   for (xx = 0; xx < BTA_HH_MAX_DEVICE; xx++) {
-    if (!bta_hh_cb.kdev[xx].in_use) {
+    if (!bta_hh_cb.kdev[xx].in_use
+        /** M: Bug Check state item for connection conflict @{ */
+        && bta_hh_cb.kdev[xx].state == BTA_HH_IDLE_ST
+        /** @} */) {
       bta_hh_cb.kdev[xx].addr = bda;
       break;
     }

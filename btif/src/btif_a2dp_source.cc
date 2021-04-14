@@ -56,6 +56,8 @@ using bluetooth::common::RepeatingTimer;
 
 extern std::unique_ptr<tUIPC_STATE> a2dp_uipc;
 
+bool is_restart_session = false;
+
 /**
  * The typical runlevel of the tx queue size is ~1 buffer
  * but due to link flow control or thread preemption in lower
@@ -238,10 +240,6 @@ static void btif_a2dp_source_cleanup_delayed(void);
 static void btif_a2dp_source_audio_tx_start_event(void);
 static void btif_a2dp_source_audio_tx_stop_event(void);
 static void btif_a2dp_source_audio_tx_flush_event(void);
-// Set up the A2DP Source codec, and prepare the encoder.
-// The peer address is |peer_addr|.
-// This function should be called prior to starting A2DP streaming.
-static void btif_a2dp_source_setup_codec(const RawAddress& peer_addr);
 static void btif_a2dp_source_setup_codec_delayed(
     const RawAddress& peer_address);
 static void btif_a2dp_source_encoder_user_config_update_event(
@@ -421,6 +419,7 @@ bool btif_a2dp_source_restart_session(const RawAddress& old_peer_address,
 
   // Must stop first the audio streaming
   if (is_streaming) {
+    is_restart_session = true;
     btif_a2dp_source_stop_audio_req();
   }
 
@@ -429,6 +428,7 @@ bool btif_a2dp_source_restart_session(const RawAddress& old_peer_address,
   if (!old_peer_address.IsEmpty()) {
     btif_a2dp_source_end_session(old_peer_address);
   } else {
+    is_restart_session = false;
     btif_a2dp_source_startup();
   }
 
@@ -544,7 +544,7 @@ bool btif_a2dp_source_is_streaming(void) {
   return btif_a2dp_source_cb.media_alarm.IsScheduled();
 }
 
-static void btif_a2dp_source_setup_codec(const RawAddress& peer_address) {
+void btif_a2dp_source_setup_codec(const RawAddress& peer_address) {
   LOG_INFO(LOG_TAG, "%s: peer_address=%s state=%s", __func__,
            peer_address.ToString().c_str(),
            btif_a2dp_source_cb.StateStr().c_str());
@@ -764,6 +764,7 @@ static void btif_a2dp_source_audio_tx_start_event(void) {
       base::Bind(&btif_a2dp_source_audio_handle_timer),
       base::TimeDelta::FromMilliseconds(
           btif_a2dp_source_cb.encoder_interface->get_encoder_interval_ms()));
+  is_restart_session = false;
 
   btif_a2dp_source_cb.stats.Reset();
   // Assign session_start_us to 1 when
@@ -847,7 +848,11 @@ static void btif_a2dp_source_audio_handle_timer(void) {
   uint64_t timestamp_us = bluetooth::common::time_get_os_boottime_us();
   log_tstamps_us("A2DP Source tx timer", timestamp_us);
 
-  if (!btif_a2dp_source_cb.media_alarm.IsScheduled()) {
+  if (!btif_a2dp_source_cb.media_alarm.IsScheduled()
+      /** M: Don't trigger the read buff when tx_flush is true. @{ */
+      // Too many read operations will block to send the Suspend ACK to audio.
+      || btif_a2dp_source_cb.tx_flush) {
+      /** @} */
     LOG_ERROR(LOG_TAG, "%s: ERROR Media task Scheduled after Suspend",
               __func__);
     return;

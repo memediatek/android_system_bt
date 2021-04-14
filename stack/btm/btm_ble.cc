@@ -47,7 +47,9 @@
 
 extern void gatt_notify_phy_updated(uint8_t status, uint16_t handle,
                                     uint8_t tx_phy, uint8_t rx_phy);
-
+/** M: Do not change link key type when smp over br @{ */
+extern void btm_send_link_key_notif(tBTM_SEC_DEV_REC* p_dev_rec);
+/** @} */
 /******************************************************************************/
 /* External Function to be called by other modules                            */
 /******************************************************************************/
@@ -76,6 +78,9 @@ bool BTM_SecAddBleDevice(const RawAddress& bd_addr, BD_NAME bd_name,
     p_dev_rec = btm_sec_allocate_dev_rec();
 
     p_dev_rec->bd_addr = bd_addr;
+    /** M: let DUMO device use same device name @{ */
+    memset(p_dev_rec->sec_bd_name, 0, sizeof(tBTM_BD_NAME));
+    /** @} */
     p_dev_rec->hci_handle = BTM_GetHCIConnHandle(bd_addr, BT_TRANSPORT_BR_EDR);
     p_dev_rec->ble_hci_handle = BTM_GetHCIConnHandle(bd_addr, BT_TRANSPORT_LE);
 
@@ -88,9 +93,12 @@ bool BTM_SecAddBleDevice(const RawAddress& bd_addr, BD_NAME bd_name,
     BTM_TRACE_DEBUG("%s: Device added, handle=0x%x, p_dev_rec=%p, bd_addr=%s",
                     __func__, p_dev_rec->ble_hci_handle, p_dev_rec,
                     bd_addr.ToString().c_str());
+  /** M: let DUMO device use same device name @{ */
+  } else {
+    if (dev_type != BT_DEVICE_DEVTYPE_DUAL)
+      memset(p_dev_rec->sec_bd_name, 0, sizeof(tBTM_BD_NAME));
   }
-
-  memset(p_dev_rec->sec_bd_name, 0, sizeof(tBTM_BD_NAME));
+  /** @} */
 
   if (bd_name && bd_name[0]) {
     p_dev_rec->sec_flags |= BTM_SEC_NAME_KNOWN;
@@ -1937,8 +1945,10 @@ uint8_t btm_proc_smp_cback(tSMP_EVT event, const RawAddress& bd_addr,
           (*btm_cb.api.p_le_callback)(event, bd_addr,
                                       (tBTM_LE_EVT_DATA*)p_data);
         }
-
-        if (event == SMP_COMPLT_EVT) {
+        /** M: Bug fix for smp over BR @{ */
+        BTM_TRACE_EVENT("%s: cmplt.smp_over_br=%d", __func__, p_data->cmplt.smp_over_br);
+        if (event == SMP_COMPLT_EVT && !p_data->cmplt.smp_over_br) {
+        /** @} */
           p_dev_rec = btm_find_dev(bd_addr);
           if (p_dev_rec == NULL) {
             BTM_TRACE_ERROR("%s: p_dev_rec is NULL", __func__);
@@ -1951,7 +1961,21 @@ uint8_t btm_proc_smp_cback(tSMP_EVT event, const RawAddress& bd_addr,
 
           res = (p_data->cmplt.reason == SMP_SUCCESS) ? BTM_SUCCESS
                                                       : BTM_ERR_PROCESSING;
-
+          /** M: Do not change link key type when smp over br @{ */
+          if (p_dev_rec->sec_smp_pair_pending & BTM_SEC_SMP_PAIR_PENDING) {
+            BTM_TRACE_DEBUG("btm_proc_smp_cback - Resetting "
+              "Sec_smp_pair_pending = %d", p_dev_rec->sec_smp_pair_pending);
+            if (p_dev_rec->sec_smp_pair_pending > BTM_SEC_SMP_PAIR_PENDING) {
+              p_dev_rec->link_key_type = (p_dev_rec->sec_smp_pair_pending
+                & BTM_SEC_LINK_KEY_TYPE_UNAUTH) ? BTM_LKEY_TYPE_UNAUTH_COMB
+                : BTM_LKEY_TYPE_AUTH_COMB;
+              BTM_TRACE_DEBUG("updated link key type to %d",
+                      p_dev_rec->link_key_type);
+              btm_send_link_key_notif(p_dev_rec);
+            }
+            p_dev_rec->sec_smp_pair_pending = BTM_SEC_SMP_NO_PAIR_PENDING;
+          }
+          /** @} */
           BTM_TRACE_DEBUG(
               "after update result=%d sec_level=0x%x sec_flags=0x%x", res,
               p_data->cmplt.sec_level, p_dev_rec->sec_flags);
@@ -1966,6 +1990,9 @@ uint8_t btm_proc_smp_cback(tSMP_EVT event, const RawAddress& bd_addr,
             if (!btm_cb.devcb.no_disc_if_pair_fail &&
                 p_data->cmplt.reason != SMP_CONN_TOUT) {
               BTM_TRACE_DEBUG("Pairing failed - prepare to remove ACL");
+              /** M: Bug fix for HOGP reconnect pending bug @{ */
+              p_dev_rec->sec_flags &= ~BTM_SEC_LE_AUTHENTICATED;
+              /** @} */
               l2cu_start_post_bond_timer(p_dev_rec->ble_hci_handle);
             } else {
               BTM_TRACE_DEBUG("Pairing failed - Not Removing ACL");
@@ -1975,6 +2002,9 @@ uint8_t btm_proc_smp_cback(tSMP_EVT event, const RawAddress& bd_addr,
 #else
           if (res != BTM_SUCCESS && p_data->cmplt.reason != SMP_CONN_TOUT) {
             BTM_TRACE_DEBUG("Pairing failed - prepare to remove ACL");
+            /** M: Bug fix for HOGP reconnect pending bug @{ */
+            p_dev_rec->sec_flags &= ~BTM_SEC_LE_AUTHENTICATED;
+            /** @} */
             l2cu_start_post_bond_timer(p_dev_rec->ble_hci_handle);
           }
 #endif

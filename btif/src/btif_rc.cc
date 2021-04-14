@@ -751,6 +751,13 @@ void handle_rc_passthrough_cmd(tBTA_AV_REMOTE_CMD* p_remote_cmd) {
     }
     return;
   }
+  /** M: Bug fix for Block AVRCP key if A2DP is not connected @{ */
+  if (btif_av_is_idle())
+  {
+    APPL_TRACE_WARNING("%s: AVDT not connection, drop command", __FUNCTION__);
+    return;
+  }
+  /** @} */
 
   /* If we previously queued a play and we get a PAUSE, clear it. */
   if ((p_remote_cmd->rc_id == AVRC_ID_PAUSE) && (p_dev->rc_pending_play)) {
@@ -1139,7 +1146,9 @@ void btif_rc_check_handle_pending_play(const RawAddress& peer_addr,
 
   BTIF_TRACE_DEBUG("%s: bSendToApp: %d", __func__, bSendToApp);
   if (p_dev->rc_pending_play) {
-    if (bSendToApp) {
+    /** M: Bug fix for Block AVRCP key if A2DP is not connected @{ */
+    if (bSendToApp && !btif_av_is_idle()) {
+    /** @} */
       tBTA_AV_REMOTE_CMD remote_cmd;
       APPL_TRACE_DEBUG("%s: Sending queued PLAYED event to app", __func__);
 

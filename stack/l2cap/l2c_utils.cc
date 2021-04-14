@@ -40,6 +40,11 @@
 #include "l2cdefs.h"
 #include "osi/include/allocator.h"
 
+/** M: include IOT list header @{*/
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+/** @}  */
 /*******************************************************************************
  *
  * Function         l2cu_can_allocate_lcb
@@ -141,6 +146,12 @@ void l2cu_update_lcb_4_bonding(const RawAddress& p_bd_addr, bool is_bonding) {
 void l2cu_release_lcb(tL2C_LCB* p_lcb) {
   tL2C_CCB* p_ccb;
 
+  /** M: avoid releasing twice  @{ */
+  if (p_lcb->in_use != TRUE) {
+    L2CAP_TRACE_WARNING("%s: lcb is not inuse !!!", __func__);
+    return;
+  }
+  /** @} */
   p_lcb->in_use = false;
   p_lcb->is_bonding = false;
 
@@ -162,11 +173,27 @@ void l2cu_release_lcb(tL2C_LCB* p_lcb) {
       if (l2cb.controller_le_xmit_window > l2cb.num_lm_ble_bufs) {
         l2cb.controller_le_xmit_window = l2cb.num_lm_ble_bufs;
       }
+      /** M: resume LE rr unacked count  @{ */
+      if (p_lcb->link_xmit_quota == 0) {
+        if (l2cb.ble_round_robin_unacked > p_lcb->sent_not_acked)
+          l2cb.ble_round_robin_unacked -= p_lcb->sent_not_acked;
+        else
+          l2cb.ble_round_robin_unacked = 0;
+      }
+      /** @} */
     } else {
       l2cb.controller_xmit_window += p_lcb->sent_not_acked;
       if (l2cb.controller_xmit_window > l2cb.num_lm_acl_bufs) {
         l2cb.controller_xmit_window = l2cb.num_lm_acl_bufs;
       }
+      /** M: resume BR rr unacked count  @{ */
+      if (p_lcb->link_xmit_quota == 0) {
+        if (l2cb.round_robin_unacked > p_lcb->sent_not_acked)
+          l2cb.round_robin_unacked -= p_lcb->sent_not_acked;
+        else
+          l2cb.round_robin_unacked = 0;
+      }
+      /** @} */
     }
   }
 
@@ -2256,6 +2283,17 @@ bool l2cu_create_conn_after_switch(tL2C_LCB* p_lcb) {
     clock_offset = (p_dev_rec) ? p_dev_rec->clock_offset : 0;
   }
 
+  /** M: not restart ACL link for pending request when link down @{*/
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if ((p_lcb->ccb_queue.p_first_ccb || p_lcb->p_pending_ccb) &&
+      interop_mtk_match_addr_name(INTEROP_MTK_NOT_RESTART_ACL,
+                                  &p_lcb->remote_bd_addr)) {
+      alarm_set_on_mloop(p_lcb->l2c_lcb_timer, L2CAP_LINK_CONNECT_TIMEOUT_MS,
+                         l2c_lcb_timer_timeout, p_lcb);
+      return (true);
+  }
+#endif
+  /** @}  */
   btsnd_hcic_create_conn(
       p_lcb->remote_bd_addr, (HCI_PKT_TYPES_MASK_DM1 | HCI_PKT_TYPES_MASK_DH1 |
                               HCI_PKT_TYPES_MASK_DM3 | HCI_PKT_TYPES_MASK_DH3 |
@@ -2390,6 +2428,21 @@ bool l2cu_set_acl_priority(const RawAddress& bd_addr, uint8_t priority,
     p_lcb->acl_priority = priority;
     l2c_link_adjust_allocation();
   }
+  /** M: for A2DP not smooth, adjust buffer allocation when acl priority changed @{ */
+  if (BTM_IS_MTK_CONTROLLER()) {
+    /* Called from above L2CAP through API; send VSC if changed */
+    if ((!reset_after_rs && (priority != p_lcb->acl_priority)) ||
+          /* Called because of a master/slave role switch; if high resend VSC */
+        ( reset_after_rs && p_lcb->acl_priority == L2CAP_PRIORITY_HIGH)) {
+        /* Adjust lmp buffer allocation for this channel if priority changed */
+      if (p_lcb->acl_priority != priority) {
+        p_lcb->acl_priority = priority;
+        l2c_link_adjust_allocation();
+      }
+    }
+  }
+  /** @} */
+
   return (true);
 }
 

@@ -383,7 +383,7 @@ extern void bta_ag_setcodec(tBTA_AG_SCB* p_scb, const tBTA_AG_DATA& data);
 extern void bta_ag_send_ring(tBTA_AG_SCB* p_scb, const tBTA_AG_DATA& data);
 extern void bta_ag_handle_collision(tBTA_AG_SCB* p_scb,
                                     const tBTA_AG_DATA& data);
-
+extern void bta_ag_rfc_srv_close(tBTA_AG_SCB* p_scb, const tBTA_AG_DATA& data);
 /* Internal utility functions */
 extern void bta_ag_sco_codec_nego(tBTA_AG_SCB* p_scb, bool result);
 extern void bta_ag_codec_negotiate(tBTA_AG_SCB* p_scb);

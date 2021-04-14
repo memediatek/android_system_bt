@@ -40,6 +40,10 @@
 #include "hcimsgs.h"
 #include "osi/include/osi.h"
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+
 /******************************************************************************/
 /*               L O C A L    D A T A    D E F I N I T I O N S                */
 /******************************************************************************/
@@ -124,6 +128,10 @@ static void btm_esco_conn_rsp(uint16_t sco_inx, uint8_t hci_status,
     } else {
       btsnd_hcic_reject_esco_conn(bda, hci_status);
     }
+    /** M: Bug Fix for create sco collision @{ */
+    if (p_sco)
+      p_sco->is_collision = false;
+    /** @} */
   } else {
     /* Connection is being accepted */
     p_sco->state = SCO_ST_CONNECTING;
@@ -307,6 +315,48 @@ static tBTM_STATUS btm_send_connect_request(uint16_t acl_handle,
     uint16_t saved_packet_types = p_setup->packet_types;
     p_setup->packet_types = temp_packet_types;
 
+    /** M: Force to use SCO. @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+    uint8_t lmp_ver = 0;
+    uint16_t lmp_subver = 0;
+    uint16_t mfct_set = 0;
+    bool is_whitelist = false;
+
+    BTM_ReadRemoteVersion(btm_cb.acl_db[acl_index].remote_addr, &lmp_ver,
+            &mfct_set, &lmp_subver);
+    //Realtek Semiconductor Corporation(93)
+    //Airoha Technology Corp. (148)
+    if (mfct_set == 93 || mfct_set == 148)
+    {
+      APPL_TRACE_DEBUG("need use eSco");
+    }
+
+    //Xradio (0x063d)
+    if( (lmp_ver == 7) && (mfct_set == 1597) && ((lmp_subver == 0x0d04) || (lmp_subver == 0x0d07)|| (lmp_subver == 0x0d03)) )
+    {
+        is_whitelist = true;
+        APPL_TRACE_DEBUG("need use eSco for Xradio device");
+    }
+
+    //RDA Microelectronics (97)
+    if( (lmp_ver == 7) && (mfct_set == 97) && (lmp_subver == 20) )
+    {
+        is_whitelist = true;
+        APPL_TRACE_DEBUG("need use eSco for RDA device (i-ball)");
+    }
+
+    if (interop_mtk_match_addr_name(INTEROP_MTK_HFP_FORCE_TO_USE_SCO,
+        &(btm_cb.acl_db[acl_index].remote_addr))
+        && (mfct_set != 93 && mfct_set != 148)
+        && !is_whitelist) {
+      *p_setup = esco_parameters_for_codec(ESCO_CODEC_CVSD);
+      p_setup->packet_types = BTM_SCO_LINK_ONLY_MASK | BTM_SCO_EXCEPTION_PKTS_MASK;
+      p_setup->retransmission_effort = ESCO_RETRANSMISSION_OFF;
+      p_setup->max_latency_ms = 10;
+    }
+#endif
+    /** @} */
+
     /* Use Enhanced Synchronous commands if supported */
     if (controller_get_interface()
             ->supports_enhanced_setup_synchronous_connection()) {
@@ -325,6 +375,11 @@ static tBTM_STATUS btm_send_connect_request(uint16_t acl_handle,
       p_setup->packet_types = saved_packet_types;
     } else { /* Use older command */
       uint16_t voice_content_format = btm_sco_voice_settings_to_legacy(p_setup);
+      /** M: Modify for SCO retry @{ */
+      if (p_setup->retransmission_effort == ESCO_RETRANSMISSION_OFF) {
+        p_setup->packet_types = BTM_SCO_LINK_ONLY_MASK | BTM_SCO_EXCEPTION_PKTS_MASK;
+      }
+      /** @} */
       LOG(INFO) << __func__ << std::hex << ": legacy parameter list"
                 << " txbw=0x" << unsigned(p_setup->transmit_bandwidth)
                 << ", rxbw=0x" << unsigned(p_setup->receive_bandwidth)
@@ -487,7 +542,7 @@ tBTM_STATUS BTM_CreateSco(const RawAddress* remote_bda, bool is_orig,
           tBTM_PM_STATE state;
           if ((btm_read_power_mode_state(*remote_bda, &state) == BTM_SUCCESS)) {
             if (state == BTM_PM_ST_SNIFF || state == BTM_PM_ST_PARK ||
-                state == BTM_PM_ST_PENDING) {
+                (state & BTM_PM_ST_PENDING)) {
               LOG(INFO) << __func__ << ": " << *remote_bda
                         << " in sniff, park or pending mode "
                         << unsigned(state);
@@ -695,6 +750,12 @@ void btm_sco_conn_req(const RawAddress& bda, DEV_CLASS dev_class,
      * to return accept sco to avoid race conditon for sco creation
      */
     bool rem_bd_matches = p->rem_bd_known && p->esco.data.bd_addr == bda;
+
+    /** M: Bug Fix for create sco collision @{ */
+    if ((p->state == SCO_ST_CONNECTING) && rem_bd_matches)
+      p->is_collision = true;
+    /** @} */
+
     if (((p->state == SCO_ST_CONNECTING) && rem_bd_matches) ||
         ((p->state == SCO_ST_LISTENING) &&
          (rem_bd_matches || !p->rem_bd_known))) {
@@ -790,6 +851,12 @@ void btm_sco_connected(uint8_t hci_status, const RawAddress* bda,
 
 #if (BTM_MAX_SCO_LINKS > 0)
   for (xx = 0; xx < BTM_MAX_SCO_LINKS; xx++, p++) {
+    /** M: Bug Fix for create sco collision @{ */
+    if (p->is_collision && (!bda) && hci_status != HCI_SUCCESS) {
+      p->is_collision = false;
+      return;
+    }
+    /** @} */
     if (((p->state == SCO_ST_CONNECTING) || (p->state == SCO_ST_LISTENING) ||
          (p->state == SCO_ST_W4_CONN_RSP)) &&
         (p->rem_bd_known) && (!bda || p->esco.data.bd_addr == *bda)) {
@@ -816,6 +883,9 @@ void btm_sco_connected(uint8_t hci_status, const RawAddress* bda,
           } else
             p->state = SCO_ST_LISTENING;
         }
+        /** M: Bug Fix for create sco collision @{ */
+        p->is_collision = false;
+        /** @} */
 
         return;
       }
@@ -824,6 +894,9 @@ void btm_sco_connected(uint8_t hci_status, const RawAddress* bda,
 
       p->state = SCO_ST_CONNECTED;
       p->hci_handle = hci_handle;
+      /** M: Bug Fix for create sco collision @{ */
+      p->is_collision = false;
+      /** @} */
 
       if (!btm_cb.sco_cb.esco_supported) {
         p->esco.data.link_type = BTM_LINK_TYPE_SCO;
@@ -904,7 +977,7 @@ tBTM_STATUS BTM_RemoveSco(uint16_t sco_inx) {
 
   if ((btm_read_power_mode_state(p->esco.data.bd_addr, &state) ==
        BTM_SUCCESS) &&
-      state == BTM_PM_ST_PENDING) {
+      (state & BTM_PM_ST_PENDING)) {
     BTM_TRACE_DEBUG("%s: BTM_PM_ST_PENDING for ACL mapped with SCO Link 0x%04x",
                     __func__, p->hci_handle);
     p->state = SCO_ST_PEND_MODECHANGE;

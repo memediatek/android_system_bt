@@ -33,6 +33,10 @@
 #include "osi/include/log.h"
 #include "osi/include/osi.h"
 
+#if defined(MTK_VND_A2DP_PKT_LEN) && (MTK_VND_A2DP_PKT_LEN == TRUE)
+#include "mediatek/stack/include/a2dp_sbc_encoder.h"
+#endif
+
 /* Buffer pool */
 #define A2DP_SBC_BUFFER_SIZE BT_DEFAULT_BUFFER_SIZE
 
@@ -147,6 +151,14 @@ void a2dp_sbc_encoder_init(const tA2DP_ENCODER_INIT_PEER_PARAMS* p_peer_params,
   a2dp_sbc_encoder_cb.peer_supports_3mbps = p_peer_params->peer_supports_3mbps;
   a2dp_sbc_encoder_cb.peer_mtu = p_peer_params->peer_mtu;
   a2dp_sbc_encoder_cb.timestamp = 0;
+
+  /** M: Firmware inform host to adjust a2dp packet length as 2-DH5/3-DH5 by RSSI.
+   ** Then host will modify a2dp pacekt length of SBC codec
+   ** after receive vendor specific event. @{ */
+#if defined(MTK_VND_A2DP_PKT_LEN) && (MTK_VND_A2DP_PKT_LEN == TRUE)
+  a2dp_sbc_set_3mbps(a2dp_sbc_encoder_cb.peer_supports_3mbps);
+#endif
+  /** @} */
 
   // NOTE: Ignore the restart_input / restart_output flags - this initization
   // happens when the connection is (re)started.
@@ -464,7 +476,18 @@ static void a2dp_sbc_get_num_frame_iteration(uint8_t* num_of_iterations,
               projected_nof);
 
   if (a2dp_sbc_encoder_cb.is_peer_edr) {
+    /** M: Firmware inform host to adjust a2dp packet length as 2-DH5/3-DH5 by RSSI.
+     ** Then host will modify a2dp pacekt length of SBC codec
+     ** after receive vendor specific event. @{ */
+#if defined(MTK_VND_A2DP_PKT_LEN) && (MTK_VND_A2DP_PKT_LEN == TRUE)
+    if (!a2dp_sbc_encoder_cb.tx_sbc_frames
+        || (a2dp_sbc_get_3mbps() != a2dp_sbc_encoder_cb.peer_supports_3mbps)) {
+      a2dp_sbc_encoder_cb.TxAaMtuSize = a2dp_sbc_encoder_cb.peer_mtu;
+      a2dp_sbc_encoder_cb.peer_supports_3mbps = a2dp_sbc_get_3mbps();
+#else
     if (!a2dp_sbc_encoder_cb.tx_sbc_frames) {
+#endif
+    /** @} */
       LOG_ERROR(LOG_TAG, "%s: tx_sbc_frames not updated, update from here",
                 __func__);
       a2dp_sbc_encoder_cb.tx_sbc_frames = calculate_max_frames_per_packet();

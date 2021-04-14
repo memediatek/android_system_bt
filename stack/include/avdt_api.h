@@ -987,4 +987,17 @@ extern uint8_t AVDT_SetTraceLevel(uint8_t new_level);
  */
 void stack_debug_avdtp_api_dump(int fd);
 
+/** M: Bug fix for not disconnect signal channel  @{ */
+/*******************************************************************************
+**
+** Function         AVDT_ULCloseReq
+**
+** Description      This function to trigger ccb checks for active streams on this CCB
+**
+** Returns          AVDT_SUCCESS if successful, otherwise error.
+**
+*******************************************************************************/
+extern uint16_t AVDT_ULCloseReq(const RawAddress&  bd_addr);
+/** @} */
+
 #endif /* AVDT_API_H */

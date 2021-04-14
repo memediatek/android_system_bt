@@ -294,12 +294,14 @@ bt_status_t btsock_rfc_listen(const char* service_name,
 
   if ((flags & BTSOCK_FLAG_NO_SDP) == 0) {
     if (!service_uuid || service_uuid->IsEmpty()) {
-      APPL_TRACE_DEBUG(
-          "%s: service_uuid not set AND BTSOCK_FLAG_NO_SDP is not set - "
-          "changing to SPP",
-          __func__);
-      // Use serial port profile to listen to specified channel
-      service_uuid = &UUID_SPP;
+      if (!is_reserved_rfc_channel(channel)) {
+        APPL_TRACE_DEBUG(
+            "%s: service_uuid not set AND BTSOCK_FLAG_NO_SDP is not set - "
+            "changing to SPP",
+            __func__);
+        // Use serial port profile to listen to specified channel
+        service_uuid = &UUID_SPP;
+     }
     } else {
       // Check the service_uuid. overwrite the channel # if reserved
       int reserved_channel = get_reserved_rfc_channel(*service_uuid);

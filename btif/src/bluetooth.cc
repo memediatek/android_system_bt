@@ -166,7 +166,10 @@ static int disable(void) {
   return BT_STATUS_SUCCESS;
 }
 
-static void cleanup(void) { stack_manager_get_interface()->clean_up_stack(); }
+static void cleanup(void) {
+  stack_manager_get_interface()->clean_up_stack();
+  btif_debug_cleanup();
+}
 
 bool is_restricted_mode() { return restricted_mode; }
 bool is_single_user_mode() { return single_user_mode; }

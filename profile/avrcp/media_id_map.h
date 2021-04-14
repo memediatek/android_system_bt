@@ -54,9 +54,28 @@ class MediaIdMap {
     return uid;
   }
 
+  /** M: Changed the track id for some IOT device. @{ */
+  MediaIdMap() : fake_track_id(1) {}
+
+  uint64_t get_fake_track_id(bool interim) {
+    if (interim) {
+      return fake_track_id;
+    }
+
+    if (fake_track_id > 99) {
+      fake_track_id = 1;
+    }
+    return (++fake_track_id);
+  }
+  /** @} */
+
  private:
   std::map<std::string, uint64_t> media_id_to_uid_;
   std::map<uint64_t, std::string> uid_to_media_id_;
+
+  /** M: Changed the track id for some IOT device. @{ */
+  uint64_t fake_track_id;
+  /** @} */
 };
 
 }  // namespace avrcp

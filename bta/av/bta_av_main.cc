@@ -86,7 +86,7 @@
 #endif
 
 #ifndef AVRCP_DEFAULT_VERSION
-#define AVRCP_DEFAULT_VERSION AVRCP_1_4_STRING
+#define AVRCP_DEFAULT_VERSION AVRCP_1_5_STRING
 #endif
 
 /* state machine states */
@@ -831,6 +831,10 @@ bool bta_av_chk_start(tBTA_AV_SCB* p_scb) {
     for (int i = 0; i < BTA_AV_NUM_STRS; i++) {
       tBTA_AV_SCB* p_scbi = bta_av_cb.p_scb[i];
       if (p_scbi && p_scbi->chnl == BTA_AV_CHNL_AUDIO && p_scbi->co_started) {
+        /** M: don't support multi a2dp stream,not need bta start@{ */
+        if ((p_scb->role & BTA_AV_ROLE_AD_ACP) == 0)
+          break;
+        /** @} */
         start = true;
         // May need to update the flush timeout of this already started stream
         if (p_scbi->co_started != bta_av_cb.audio_open_cnt) {

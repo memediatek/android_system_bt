@@ -57,6 +57,12 @@ bool btif_a2dp_source_restart_session(const RawAddress& old_peer_address,
 // streaming session for |peer_address|.
 bool btif_a2dp_source_end_session(const RawAddress& peer_address);
 
+// Set up the A2DP Source codec, and prepare the encoder.
+// The peer address is |peer_addr|.
+// This function should be called prior to starting A2DP streaming.
+void btif_a2dp_source_setup_codec(const RawAddress& peer_addr);
+
+
 // Shutdown the A2DP Source module.
 // This function should be called by the BTIF state machine to stop streaming.
 void btif_a2dp_source_shutdown(void);

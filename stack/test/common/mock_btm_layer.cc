@@ -43,3 +43,7 @@ tBTM_STATUS btm_sec_mx_access_request(const RawAddress& bd_addr, uint16_t psm,
 uint16_t btm_get_max_packet_size(const RawAddress& addr) {
   return RFCOMM_DEFAULT_MTU;
 }
+
+tBTM_SEC_DEV_REC* btm_find_dev(const RawAddress& bd_addr) {
+  return NULL;
+}

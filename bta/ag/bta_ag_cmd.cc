@@ -22,6 +22,10 @@
 #include <cstdio>
 #include <cstring>
 
+/** M: New Feature for setting volume support to property. @{ */
+#include <cutils/properties.h>
+/** @ } */
+
 #include "bt_common.h"
 #include "bt_target.h"
 #include "bt_types.h"
@@ -36,12 +40,18 @@
 #include "port_api.h"
 #include "utl.h"
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#include "mediatek/bta/include/mtk_bta_ag_cmd.h"
+#endif
 /*****************************************************************************
  *  Constants
  ****************************************************************************/
 
 /* Ring timeout */
-#define BTA_AG_RING_TIMEOUT_MS (5 * 1000) /* 5 seconds */
+/** M: reduce ring timeout for avoid special carkit no voice @{ */
+#define BTA_AG_RING_TIMEOUT_MS (3 * 1000) /* 3 seconds */
+/** @} */
 
 #define BTA_AG_CMD_MAX_VAL 32767 /* Maximum value is signed 16-bit value */
 
@@ -554,6 +564,7 @@ bool bta_ag_inband_enabled(tBTA_AG_SCB* p_scb) {
  ******************************************************************************/
 void bta_ag_send_call_inds(tBTA_AG_SCB* p_scb, tBTA_AG_RES result) {
   uint8_t call;
+  bool on_demand = false;
 
   /* set new call and callsetup values based on BTA_AgResult */
   size_t callsetup = bta_ag_indicator_by_result_code(result);
@@ -569,8 +580,40 @@ void bta_ag_send_call_inds(tBTA_AG_SCB* p_scb, tBTA_AG_RES result) {
   }
 
   /* Send indicator function tracks if the values have actually changed */
-  bta_ag_send_ind(p_scb, BTA_AG_IND_CALL, call, false);
+  /** M: ALPS03757990: Fix no voice issue for special device @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr_name(INTEROP_MTK_HFP_UPDATE_SECOND_CALLSTATE, &(p_scb->peer_addr))) {
+    APPL_TRACE_DEBUG("%s call=%d, p_scb->call_ind=%d, callsetup=%d, p_scb->callsetup_ind=%d",
+            __func__, call, p_scb->call_ind, callsetup, p_scb->callsetup_ind);
+    if ((call == 1) && (p_scb->call_ind ==1) && (callsetup == 0) && (p_scb->callsetup_ind !=0))
+      on_demand=true;
+  }
+#endif
+  bta_ag_send_ind(p_scb, BTA_AG_IND_CALL, call, on_demand);
+  /** @} */
   bta_ag_send_ind(p_scb, BTA_AG_IND_CALLSETUP, callsetup, false);
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+
+  switch (result) {
+    case BTA_AG_IN_CALL_CONN_RES:
+      if (interop_mtk_match_addr_name(INTEROP_MTK_HFP_DELAY_SCO_AFTER_ACTIVE,
+         &(p_scb->peer_addr))) {
+         APPL_TRACE_DEBUG("special device need delay after ciev:1,1");
+         usleep(500 * 1000);
+      }
+      break;
+    case BTA_AG_OUT_CALL_CONN_RES:
+      if (interop_mtk_match_addr_name(INTEROP_MTK_HFP_DELAY_SCO_IN_ACT,
+         &(p_scb->peer_addr))) {
+        APPL_TRACE_DEBUG("Dealy setup sco after call active");
+        usleep(600 * 1000);
+      }
+      break;
+    default:
+         /* ignore all others */
+         break;
+  }
+#endif
 }
 
 /*******************************************************************************
@@ -839,6 +882,10 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
   tBTA_AG_SCB* ag_scb;
   uint32_t i, ind_id;
   uint32_t bia_masked_out;
+  /** M: Bug fix for IOT Device. @{ */
+  static long hfp_conn_time = 0;
+  /** @} */
+
   if (p_arg == nullptr) {
     APPL_TRACE_ERROR("%s: p_arg is null, send error and return", __func__);
     bta_ag_send_error(p_scb, BTA_AG_ERR_INV_CHAR_IN_TSTR);
@@ -880,6 +927,34 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
     case BTA_AG_AT_CBC_EVT:
       /* send OK */
       bta_ag_send_ok(p_scb);
+      /** M: cancel ring after recive ATA. @{ */
+      if (cmd == BTA_AG_AT_A_EVT) {
+         alarm_cancel(p_scb->ring_timer);
+         /** M: Create SCO right after receiving ATA command @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+         if (interop_mtk_match_addr_name(INTEROP_MTK_HFP_CREATE_SCO_AFTER_ATA,
+             &(p_scb->peer_addr))) {
+             APPL_TRACE_DEBUG("%s SCO open right after AT_A command.", __func__);
+             bta_ag_sco_open(p_scb, tBTA_AG_DATA::kEmpty);
+         }
+#endif
+         /** @} */
+
+      }
+      /** @} */
+      /** M: Ignore the immediate mute command. @{ */
+      // Some device send VGS/VGM = 0 when connected HFP, this
+      // will cause no voice for call, so ignore the command in a while
+      // after HFP connected.
+      if (((cmd == BTA_AG_SPK_EVT) || (cmd == BTA_AG_MIC_EVT))
+           && (val.num == 0)) {
+        long cur_time = time(NULL);
+        if (cur_time - hfp_conn_time < 2) {
+          event = 0;
+          APPL_TRACE_DEBUG("%s: ignoring VGS/VGM=0 within 2s after connection", __func__);
+        }
+      }
+      /** @} */
       break;
 
     case BTA_AG_AT_CHUP_EVT:
@@ -965,6 +1040,14 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
         /* if service level conn. not already open, now it's open */
         bta_ag_svc_conn_open(p_scb, tBTA_AG_DATA::kEmpty);
       } else {
+        /** M: only accept active device's AT+CHLD at cmd. @{ */
+        if (!bta_ag_sco_is_active_device(p_scb->peer_addr)) {
+        LOG(WARNING) << __func__ << ": AT+CHLD rejected as " << p_scb->peer_addr
+                << " is not the active device";
+        event = 0;
+        bta_ag_send_error(p_scb, BTA_AG_ERR_OP_NOT_ALLOWED);
+        } else {
+        /** @} */
         val.idx = bta_ag_parse_chld(p_scb, val.str);
 
         if (val.idx == BTA_AG_INVALID_CHLD) {
@@ -999,6 +1082,9 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
 
         /* Do not send OK. Let app decide after parsing the val str */
         /* bta_ag_send_ok(p_scb); */
+        /** M: only accept active device's AT+CHLD at cmd. @{ */
+            }
+        /** @} */
       }
       break;
 
@@ -1096,11 +1182,40 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
     case BTA_AG_LOCAL_EVT_BRSF: {
       /* store peer features */
       p_scb->peer_features = (uint16_t)int_arg;
+      /** M: Bug fix for IOT Device. @{ */
+      hfp_conn_time = time(NULL);
+      /** @} */
 
       tBTA_AG_FEAT features = p_scb->features;
       if (p_scb->peer_version < HFP_VERSION_1_7) {
         features &= HFP_1_6_FEAT_MASK;
       }
+      /** M: Add for HFP 1.7 to 1.6 blacklist @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      else {
+        features = check_hfp_ag_feature_by_blacklist(features, p_scb->peer_addr);
+      }
+#endif
+      /** @} */
+
+      /** M: New Feature for setting volume support to property. @{ */
+      if ((p_scb->peer_features & BTA_AG_PEER_FEAT_VOL) == 0) {
+        property_set("persist.vendor.bluetooth.hfp.vol", "0");
+      } else {
+        property_set("persist.vendor.bluetooth.hfp.vol", "1");
+      }
+      /** @} */
+
+      /** M: Reset sco codec if not support codec negotiation. @{ */
+      if (!p_scb->received_at_bac &&
+          (p_scb->peer_sdp_features & BTA_AG_FEAT_WBS_SUPPORT) &&
+            !((p_scb->peer_features & BTA_AG_PEER_FEAT_CODEC) &&
+              (p_scb->features & BTA_AG_FEAT_CODEC))) {
+        p_scb->codec_updated = false;
+        p_scb->peer_codecs = BTA_AG_CODEC_CVSD;
+        p_scb->sco_codec = BTA_AG_CODEC_CVSD;
+      }
+      /** @} */
 
       APPL_TRACE_DEBUG("%s BRSF HF: 0x%x, phone: 0x%x", __func__,
                        p_scb->peer_features, features);
@@ -1466,6 +1581,13 @@ void bta_ag_hfp_result(tBTA_AG_SCB* p_scb, const tBTA_AG_API_RESULT& result) {
           bta_ag_send_ring(p_scb, tBTA_AG_DATA::kEmpty);
         } else {
           /* else open sco, send ring after sco opened */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+          if (interop_mtk_match_addr_name(INTEROP_MTK_HFP_DELAY_SCO_FOR_MT_CALL,
+             &(p_scb->peer_addr))) {
+              APPL_TRACE_DEBUG("incoming call, sleep 100ms before opening SCO for IOT device");
+             usleep(100 * 1000);
+          }
+#endif
           p_scb->post_sco = BTA_AG_POST_SCO_RING;
           bta_ag_sco_open(p_scb, tBTA_AG_DATA::kEmpty);
         }
@@ -1502,6 +1624,13 @@ void bta_ag_hfp_result(tBTA_AG_SCB* p_scb, const tBTA_AG_API_RESULT& result) {
       bta_ag_send_call_inds(p_scb, result.result);
       if (result.data.audio_handle == bta_ag_scb_to_idx(p_scb) &&
           !(p_scb->features & BTA_AG_FEAT_NOSCO)) {
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+        if (interop_mtk_match_addr_name(INTEROP_MTK_HFP_DELAY_SCO_FOR_MO_CALL,
+           &(p_scb->peer_addr))) {
+           APPL_TRACE_DEBUG("outgoing call, sleep 100ms before opening SCO for IOT device");
+           usleep(100 * 1000);
+        }
+#endif
         bta_ag_sco_open(p_scb, tBTA_AG_DATA::kEmpty);
       }
       break;
@@ -1542,6 +1671,9 @@ void bta_ag_hfp_result(tBTA_AG_SCB* p_scb, const tBTA_AG_API_RESULT& result) {
       break;
 
     case BTA_AG_CALL_CANCEL_RES:
+      /** M: bug fix for ring timer not cancel. @{ */
+      alarm_cancel(p_scb->ring_timer);
+      /** @} */
       /* send indicators */
       bta_ag_send_call_inds(p_scb, result.result);
       break;
@@ -1567,9 +1699,12 @@ void bta_ag_hfp_result(tBTA_AG_SCB* p_scb, const tBTA_AG_API_RESULT& result) {
       break;
 
     case BTA_AG_INBAND_RING_RES:
-      p_scb->inband_enabled = result.data.state;
-      APPL_TRACE_DEBUG("inband_enabled set to %d", p_scb->inband_enabled);
-      bta_ag_send_result(p_scb, result.result, nullptr, result.data.state);
+      /** M: Change for bug fix: check if inband ring feature is enabled. @{ */
+      {
+        bool result_state = result.data.state && bta_ag_inband_enabled(p_scb);
+        bta_ag_send_result(p_scb, result.result, nullptr, result_state);
+      }
+      /** @} */
       break;
 
     case BTA_AG_CIND_RES:

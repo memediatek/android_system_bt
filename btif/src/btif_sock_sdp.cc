@@ -83,8 +83,13 @@ static const tBTA_OP_FMT bta_ops_obj_fmt[OBEX_PUSH_NUM_FORMATS] = {
    BTA_OP_ICAL_MASK | BTA_OP_VNOTE_MASK | BTA_OP_VMSG_MASK | BTA_OP_ANY_MASK)
 #endif
 
-#define RESERVED_SCN_PBS 19
 #define RESERVED_SCN_OPS 12
+#define RESERVED_SCN_SAP 16
+#define RESERVED_SCN_PBS 19
+#define RESERVED_SCN_FTP 20
+#define RESERVED_SCN_MNS 22
+#define RESERVED_SCN_DUN 25
+#define RESERVED_SCN_MAP 26
 
 #define UUID_MAX_LENGTH 16
 
@@ -427,8 +432,13 @@ static int add_rfc_sdp_by_uuid(const char* name, const Uuid& uuid,
 
 bool is_reserved_rfc_channel(const int channel) {
   switch (channel) {
-    case RESERVED_SCN_PBS:
     case RESERVED_SCN_OPS:
+    case RESERVED_SCN_SAP:
+    case RESERVED_SCN_PBS:
+    case RESERVED_SCN_FTP:
+    case RESERVED_SCN_MNS:
+    case RESERVED_SCN_DUN:
+    case RESERVED_SCN_MAP:
       return true;
   }
 

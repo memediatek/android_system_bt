@@ -56,6 +56,10 @@
 
 using base::Location;
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+
 extern void btm_process_cancel_complete(uint8_t status, uint8_t mode);
 extern void btm_ble_test_command_complete(uint8_t* p);
 extern void smp_cancel_start_encryption_attempt();
@@ -75,7 +79,8 @@ static void btu_hcif_authentication_comp_evt(uint8_t* p);
 static void btu_hcif_rmt_name_request_comp_evt(uint8_t* p, uint16_t evt_len);
 static void btu_hcif_encryption_change_evt(uint8_t* p);
 static void btu_hcif_read_rmt_features_comp_evt(uint8_t* p);
-static void btu_hcif_read_rmt_ext_features_comp_evt(uint8_t* p);
+static void btu_hcif_read_rmt_ext_features_comp_evt(uint8_t* p,
+                                                    uint8_t evt_len);
 static void btu_hcif_read_rmt_version_comp_evt(uint8_t* p);
 static void btu_hcif_qos_setup_comp_evt(uint8_t* p);
 static void btu_hcif_command_complete_evt(BT_HDR* response, void* context);
@@ -295,7 +300,7 @@ void btu_hcif_process_event(UNUSED_ATTR uint8_t controller_id, BT_HDR* p_msg) {
       btu_hcif_read_rmt_features_comp_evt(p);
       break;
     case HCI_READ_RMT_EXT_FEATURES_COMP_EVT:
-      btu_hcif_read_rmt_ext_features_comp_evt(p);
+      btu_hcif_read_rmt_ext_features_comp_evt(p, hci_evt_len);
       break;
     case HCI_READ_RMT_VERSION_COMP_EVT:
       btu_hcif_read_rmt_version_comp_evt(p);
@@ -1016,6 +1021,18 @@ static void btu_hcif_connection_comp_evt(uint8_t* p) {
     btm_sec_connected(bda, handle, status, enc_mode);
 
     l2c_link_hci_conn_comp(status, handle, bda);
+
+    /** M: Role Switch @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+    if(interop_mtk_match_addr_name(INTEROP_MTK_ROLE_SWITCH, &bda)) {
+      HCI_TRACE_DEBUG("%s INTEROP_MTK_ROLE_SWITCH bda:%s", __func__, bda.ToString().c_str());
+      if (BTM_SwitchRole(bda, HCI_ROLE_MASTER, NULL) != BTM_CMD_STARTED) {
+        HCI_TRACE_DEBUG("%s BTM_SwitchRole fail", __func__);
+      }
+    }
+#endif
+    /** @} */
+
   } else {
     memset(&esco_data, 0, sizeof(tBTM_ESCO_DATA));
     /* esco_data.link_type = HCI_LINK_TYPE_SCO; already zero */
@@ -1211,7 +1228,8 @@ static void btu_hcif_read_rmt_features_comp_evt(uint8_t* p) {
  * Returns          void
  *
  ******************************************************************************/
-static void btu_hcif_read_rmt_ext_features_comp_evt(uint8_t* p) {
+static void btu_hcif_read_rmt_ext_features_comp_evt(uint8_t* p,
+                                                    uint8_t evt_len) {
   uint8_t* p_cur = p;
   uint8_t status;
   uint16_t handle;
@@ -1219,7 +1237,7 @@ static void btu_hcif_read_rmt_ext_features_comp_evt(uint8_t* p) {
   STREAM_TO_UINT8(status, p_cur);
 
   if (status == HCI_SUCCESS)
-    btm_read_remote_ext_features_complete(p);
+    btm_read_remote_ext_features_complete(p, evt_len);
   else {
     STREAM_TO_UINT16(handle, p_cur);
     btm_read_remote_ext_features_failed(status, handle);
@@ -1527,6 +1545,15 @@ static void btu_hcif_hdl_command_status(uint16_t opcode, uint8_t status,
         l2c_link_hci_conn_comp(status, HCI_INVALID_HANDLE, bd_addr);
       }
       break;
+    /** M: Bug fix. Disconnect the link directly. Or it'll become a zombie link@{ */
+    case HCI_READ_RMT_FEATURES:
+    case HCI_BLE_READ_REMOTE_FEAT:
+      if (status != HCI_SUCCESS) {
+        STREAM_TO_UINT16(handle, p_cmd);
+        btsnd_hcic_disconnect(handle, HCI_ERR_PEER_USER);
+      }
+      break;
+    /** @} */
     case HCI_AUTHENTICATION_REQUESTED:
       if (status != HCI_SUCCESS) {
         // Device refused to start authentication
@@ -1602,6 +1629,7 @@ static void btu_hcif_hdl_command_status(uint16_t opcode, uint8_t status,
       if ((opcode & HCI_GRP_VENDOR_SPECIFIC) == HCI_GRP_VENDOR_SPECIFIC) {
         btm_vsc_complete(&status, opcode, 1,
                          (tBTM_VSC_CMPL_CB*)p_vsc_status_cback);
+
       }
   }
 }

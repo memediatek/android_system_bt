@@ -15,7 +15,7 @@ cc_library_shared {
         "android.hardware.bluetooth.audio@2.0",
         "libaudioutils",
         "libbase",
-        "libbluetooth_audio_session",
+        "libbluetooth_audio_session_mediatek",
         "libcutils",
         "libfmq",
         "libhidlbase",

@@ -281,6 +281,13 @@ void btm_ble_add_resolving_list_entry_complete(uint8_t* p, uint16_t evt_len) {
       /* VSC complete has one extra byte for op code, skip it here */
       p++;
       STREAM_TO_UINT8(btm_cb.ble_ctr_cb.resolving_list_avail_size, p);
+
+      /** M: Bug fix for BTM_RESOLVING_LIST_BIT be cleared unexpectedly @{ */
+      tBTM_SEC_DEV_REC* p_dev_rec = btm_find_dev(pseudo_bda);
+      if (p_dev_rec != NULL &&
+          !(p_dev_rec->ble.in_controller_list & BTM_RESOLVING_LIST_BIT))
+        btm_ble_update_resolving_list(pseudo_bda, TRUE);
+      /** @} */
     } else
       btm_cb.ble_ctr_cb.resolving_list_avail_size--;
   } else if (status ==
@@ -320,6 +327,13 @@ void btm_ble_remove_resolving_list_entry_complete(uint8_t* p,
     if (evt_len > 2) {
       p++; /* skip opcode */
       STREAM_TO_UINT8(btm_cb.ble_ctr_cb.resolving_list_avail_size, p);
+
+      /** M: Bug fix for BTM_RESOLVING_LIST_BIT be set unexpectedly @{ */
+      tBTM_SEC_DEV_REC* p_dev_rec = btm_find_dev(pseudo_bda);
+      if (p_dev_rec != NULL &&
+          (p_dev_rec->ble.in_controller_list & BTM_RESOLVING_LIST_BIT))
+        btm_ble_update_resolving_list(pseudo_bda, FALSE);
+      /** @} */
     } else
       btm_cb.ble_ctr_cb.resolving_list_avail_size++;
   }

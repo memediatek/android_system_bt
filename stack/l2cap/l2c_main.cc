@@ -755,6 +755,12 @@ static void process_l2cap_cmd(tL2C_LCB* p_lcb, uint8_t* p, uint16_t pkt_len) {
           alarm_cancel(p_lcb->info_resp_timer);
           p_lcb->w4_info_rsp = false;
         }
+        /** M: ignore the response @{ */
+        else {
+          L2CAP_TRACE_WARNING ("L2CAP_CMD_INFO_RSP is received, but w4_info_rsp is FALSE !!!");
+          break;
+        }
+        /** @} */
 
         uint16_t info_type, result;
         if (p + 4 > p_next_cmd) return;
@@ -781,11 +787,21 @@ static void process_l2cap_cmd(tL2C_LCB* p_lcb, uint8_t* p, uint16_t pkt_len) {
 #if (L2CAP_NUM_FIXED_CHNLS > 0)
         if (info_type == L2CAP_FIXED_CHANNELS_INFO_TYPE) {
           if (result == L2CAP_INFO_RESP_RESULT_SUCCESS) {
+            /** M: Some devices doesn't follow spec, fixed_chnl_array_size != L2CAP_FIXED_CHNL_ARRAY_SIZE(8) @{ */
+            uint8_t fixed_chnl_array_size = L2CAP_FIXED_CHNL_ARRAY_SIZE;
             if (p + L2CAP_FIXED_CHNL_ARRAY_SIZE > p_next_cmd) {
-              android_errorWriteLog(0x534e4554, "111215173");
-              return;
+              if (p + (cmd_len - 4) > p_next_cmd){
+                  android_errorWriteLog(0x534e4554, "111215173");
+                  L2CAP_TRACE_WARNING("%s: p + (cmd_len-4) > p_next_cmd", __func__);
+                  return;
+              }else{
+                  fixed_chnl_array_size = cmd_len - 4;
+                  L2CAP_TRACE_WARNING("%s: p + L2CAP_FIXED_CHNL_ARRAY_SIZE > p_next_cmd", __func__);
+              }
             }
-            memcpy(p_lcb->peer_chnl_mask, p, L2CAP_FIXED_CHNL_ARRAY_SIZE);
+            L2CAP_TRACE_WARNING ("%s: L2CAP_CMD_INFO_RSP - fixed_chnl_array_size=%d", __func__, fixed_chnl_array_size);
+            memcpy(p_lcb->peer_chnl_mask, p, fixed_chnl_array_size);
+            /** @} */
           }
 
           l2cu_process_fixed_chnl_resp(p_lcb);

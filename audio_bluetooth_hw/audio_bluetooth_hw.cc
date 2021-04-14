@@ -31,7 +31,14 @@
 static int adev_set_parameters(struct audio_hw_device* dev,
                                const char* kvpairs) {
   LOG(VERBOSE) << __func__ << ": kevpairs=[" << kvpairs << "]";
-  return -ENOSYS;
+  int retval = 0;
+  auto* bluetooth_dev = reinterpret_cast<bluetooth_audio_dev*>(dev);
+  std::unique_lock<std::mutex> lock(*bluetooth_dev->mutex_);
+  if (bluetooth_dev->output == nullptr) return retval;
+  auto* out = bluetooth_dev->output;
+  retval =
+    out->stream_out_.common.set_parameters((struct audio_stream*)out, kvpairs);
+  return retval;
 }
 
 static char* adev_get_parameters(const struct audio_hw_device* dev,
@@ -82,6 +89,9 @@ static int adev_get_mic_mute(const struct audio_hw_device* dev, bool* state) {
 static int adev_dump(const audio_hw_device_t* device, int fd) { return 0; }
 
 static int adev_close(hw_device_t* device) {
+  auto* bluetooth_dev = reinterpret_cast<bluetooth_audio_dev*>(device);
+  delete bluetooth_dev->mutex_;
+  bluetooth_dev->mutex_ = nullptr;
   free(device);
   return 0;
 }
@@ -91,34 +101,36 @@ static int adev_open(const hw_module_t* module, const char* name,
   LOG(VERBOSE) << __func__ << ": name=[" << name << "]";
   if (strcmp(name, AUDIO_HARDWARE_INTERFACE) != 0) return -EINVAL;
 
-  struct audio_hw_device* adev =
-      (struct audio_hw_device*)calloc(1, sizeof(struct audio_hw_device));
+  struct bluetooth_audio_dev* adev =
+      (struct bluetooth_audio_dev*)calloc(1, sizeof(struct bluetooth_audio_dev));
   if (!adev) return -ENOMEM;
 
-  adev->common.tag = HARDWARE_DEVICE_TAG;
-  adev->common.version = AUDIO_DEVICE_API_VERSION_2_0;
-  adev->common.module = (struct hw_module_t*)module;
-  adev->common.close = adev_close;
+  adev->mutex_ = new std::mutex;
+  adev->device.common.tag = HARDWARE_DEVICE_TAG;
+  adev->device.common.version = AUDIO_DEVICE_API_VERSION_2_0;
+  adev->device.common.module = (struct hw_module_t*)module;
+  adev->device.common.close = adev_close;
 
-  adev->init_check = adev_init_check;
-  adev->set_voice_volume = adev_set_voice_volume;
-  adev->set_master_volume = adev_set_master_volume;
-  adev->get_master_volume = adev_get_master_volume;
-  adev->set_mode = adev_set_mode;
-  adev->set_mic_mute = adev_set_mic_mute;
-  adev->get_mic_mute = adev_get_mic_mute;
-  adev->set_parameters = adev_set_parameters;
-  adev->get_parameters = adev_get_parameters;
-  adev->get_input_buffer_size = adev_get_input_buffer_size;
-  adev->open_output_stream = adev_open_output_stream;
-  adev->close_output_stream = adev_close_output_stream;
-  adev->open_input_stream = adev_open_input_stream;
-  adev->close_input_stream = adev_close_input_stream;
-  adev->dump = adev_dump;
-  adev->set_master_mute = adev_set_master_mute;
-  adev->get_master_mute = adev_get_master_mute;
+  adev->device.init_check = adev_init_check;
+  adev->device.set_voice_volume = adev_set_voice_volume;
+  adev->device.set_master_volume = adev_set_master_volume;
+  adev->device.get_master_volume = adev_get_master_volume;
+  adev->device.set_mode = adev_set_mode;
+  adev->device.set_mic_mute = adev_set_mic_mute;
+  adev->device.get_mic_mute = adev_get_mic_mute;
+  adev->device.set_parameters = adev_set_parameters;
+  adev->device.get_parameters = adev_get_parameters;
+  adev->device.get_input_buffer_size = adev_get_input_buffer_size;
+  adev->device.open_output_stream = adev_open_output_stream;
+  adev->device.close_output_stream = adev_close_output_stream;
+  adev->device.open_input_stream = adev_open_input_stream;
+  adev->device.close_input_stream = adev_close_input_stream;
+  adev->device.dump = adev_dump;
+  adev->device.set_master_mute = adev_set_master_mute;
+  adev->device.get_master_mute = adev_get_master_mute;
 
-  *device = &adev->common;
+  *device = &adev->device.common;
+  adev->output = nullptr;
   return 0;
 }
 

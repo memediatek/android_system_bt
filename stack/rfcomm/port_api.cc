@@ -40,6 +40,13 @@
 #include "rfcdefs.h"
 #include "sdp_api.h"
 
+/** M: Change for bug fix: some devices can not parse multi AT commands
+ ** in a rfcomm packet. @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+/** @} */
+
 /* duration of break in 200ms units */
 #define PORT_BREAK_DURATION 1
 
@@ -1281,6 +1288,14 @@ static int port_write(tPORT* p_port, BT_HDR* p_buf) {
     return (PORT_CLOSED);
   }
 
+  /** M: Modify for flow control checking @{ */
+  if((p_port->rfc.p_mcb->flow == PORT_FC_CREDIT) &&
+        p_port->tx.peer_fc && (p_port->credit_tx > 0)) {
+        RFCOMM_TRACE_WARNING("PORT_Write: flow disabled but still has credit, enable flow!");
+        p_port->tx.peer_fc = false;
+    }
+  /** @} */
+
   /* Keep the data in pending queue if peer does not allow data, or */
   /* Peer is not ready or Port is not yet opened or initial port control */
   /* command has not been sent */
@@ -1580,6 +1595,19 @@ int PORT_WriteData(uint16_t handle, const char* p_data, uint16_t max_len,
   length = RFCOMM_DATA_BUF_SIZE -
            (uint16_t)(sizeof(BT_HDR) + L2CAP_MIN_OFFSET + RFCOMM_DATA_OVERHEAD);
 
+/** M: Change for bug fix: some devices can not parse multi AT commands
+ ** in a rfcomm packet. @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (((p_port->uuid == UUID_SERVCLASS_HEADSET_AUDIO_GATEWAY)
+    || (p_port->uuid == UUID_SERVCLASS_AG_HANDSFREE))
+    && interop_mtk_match_addr_name(INTEROP_MTK_FORBID_COMBINE_RFCOMM_DATA,
+      &p_port->bd_addr)) {
+    RFCOMM_TRACE_ERROR ("PORT_WriteData() peer_device can not parse the multi-response");
+  }
+  else {
+#endif
+/** @} */
+
   /* If there are buffers scheduled for transmission check if requested */
   /* data fits into the end of the queue */
   mutex_global_lock();
@@ -1599,6 +1627,10 @@ int PORT_WriteData(uint16_t handle, const char* p_data, uint16_t max_len,
   }
 
   mutex_global_unlock();
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  }
+#endif
 
   while (max_len) {
     /* if we're over buffer high water mark, we're done */

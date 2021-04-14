@@ -54,7 +54,10 @@
 #endif
 #include "btif/include/btif_av.h"
 #include "btif/include/btif_hf.h"
-
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+#include "mediatek/include/mtk_bta_av_act.h"
 /*****************************************************************************
  *  Constants
  ****************************************************************************/
@@ -62,6 +65,11 @@
 /* the delay time in milliseconds to start service discovery on AVRCP */
 #ifndef BTA_AV_RC_DISC_TIME_VAL
 #define BTA_AV_RC_DISC_TIME_VAL 3500
+#endif
+
+/* Delay 100ms to start AVRCP SDP for IOT device */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+constexpr int BTA_AV_RC_DISC_TIME_IOT_VAL = 100;
 #endif
 
 /* the timer in milliseconds to guard against link busy and AVDT_CloseReq failed
@@ -329,7 +337,16 @@ static void bta_av_st_rc_timer(tBTA_AV_SCB* p_scb,
       /* (bta_av_cb.features & BTA_AV_FEAT_RCCT) && */
       (p_scb->use_rc || (p_scb->role & BTA_AV_ROLE_AD_ACP))) {
     if ((p_scb->wait & BTA_AV_WAIT_ROLE_SW_BITS) == 0) {
-      bta_sys_start_timer(p_scb->avrc_ct_timer, BTA_AV_RC_DISC_TIME_VAL,
+      /** M: Fixed slower Avrcp connection cause IOT issue @{ */
+      uint64_t delay_rc_disc_time = BTA_AV_RC_DISC_TIME_VAL;
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      if (interop_mtk_match_addr_name(INTEROP_MTK_START_AVRCP_100_MS,
+        &p_scb->open_api.bd_addr)) {
+        delay_rc_disc_time = BTA_AV_RC_DISC_TIME_IOT_VAL;
+      }
+#endif
+      /** @} */
+      bta_sys_start_timer(p_scb->avrc_ct_timer, delay_rc_disc_time,
                           BTA_AV_AVRC_TIMER_EVT, p_scb->hndl);
     } else {
       p_scb->wait |= BTA_AV_WAIT_CHECK_RC;
@@ -483,6 +500,19 @@ void bta_av_proc_stream_evt(uint8_t handle, const RawAddress& bd_addr,
     p_msg->avdt_event = event;
     bta_sys_sendmsg(p_msg);
   }
+
+/** M: Bug fix for not disconnect signal channel  @{ */
+    if (event == AVDT_CLOSE_IND_EVT && bta_av_cb.p_scb[scb_index]
+                && bta_av_cb.p_scb[scb_index]->state == BTA_AV_INCOMING_SST){
+        APPL_TRACE_WARNING("Receive disconnect_ind as incoming connection setup procedure, notify btif_av");
+        tBTA_AV_REJECT reject;
+        reject.bd_addr = bd_addr;
+        reject.hndl = bta_av_cb.p_scb[scb_index]->hndl;
+        (*bta_av_cb.p_cback)(BTA_AV_REJECT_EVT, (tBTA_AV *) &reject);
+
+        AVDT_ULCloseReq(bd_addr);
+    }
+/** @} */
 
   if (p_data) {
     bta_av_conn_cback(handle, bd_addr, event, p_data, scb_index);
@@ -1060,7 +1090,13 @@ void bta_av_disconnect_req(tBTA_AV_SCB* p_scb,
   if (bta_av_cb.conn_lcb) {
     p_rcb = bta_av_get_rcb_by_shdl((uint8_t)(p_scb->hdi + 1));
     if (p_rcb) bta_av_del_rc(p_rcb);
-    AVDT_DisconnectReq(p_scb->PeerAddress(), &bta_av_proc_stream_evt);
+    /** M: It will not exit closing state when disconnect in incoming state. @{ */
+    uint16_t result = AVDT_DisconnectReq(p_scb->PeerAddress(), &bta_av_proc_stream_evt);
+    if ((p_scb->state == BTA_AV_CLOSING_SST) && (result != AVDT_SUCCESS)) {
+      bta_av_ssm_execute(p_scb, BTA_AV_AVDT_DISCONNECT_EVT, NULL);
+      APPL_TRACE_WARNING("%s: force to enter init state when ccb is not exist.", __func__);
+    }
+    /** @} */
   } else {
     bta_av_ssm_execute(p_scb, BTA_AV_AVDT_DISCONNECT_EVT, NULL);
   }
@@ -1161,9 +1197,19 @@ void bta_av_setconfig_rsp(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
        * call disc_res now */
       /* this is called in A2DP SRC path only, In case of SINK we don't need it
        */
-      if (local_sep == AVDT_TSEP_SRC)
+
+      /** M: Bug fix for avoid reset discover result@{ */
+      if ((local_sep == AVDT_TSEP_SRC)
+                && (p_scb->num_disc_snks == 0))
+      {
         p_scb->p_cos->disc_res(p_scb->hndl, p_scb->PeerAddress(), num, num, 0,
                                UUID_SERVCLASS_AUDIO_SOURCE);
+        /** M: Bug fix for DUT doesnot get peer's capability because of uuid_int=0 @{ */
+        if (p_scb->uuid_int == 0)
+            p_scb->uuid_int = UUID_SERVCLASS_AUDIO_SOURCE;
+        /** @} */
+      }
+      /** @} */
     } else {
       /* we do not know the peer device and it is using non-SBC codec
        * we need to know all the SEPs on SNK */
@@ -1202,7 +1248,6 @@ void bta_av_setconfig_rsp(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
 void bta_av_str_opened(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
   tBTA_AV_CONN_CHG msg;
   uint8_t* p;
-
   APPL_TRACE_DEBUG("%s: peer %s handle: %d", __func__,
                    p_scb->PeerAddress().ToString().c_str(), p_scb->hndl);
 
@@ -1282,6 +1327,9 @@ void bta_av_str_opened(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
     APPL_TRACE_ERROR("%s: Calling AVDT_AbortReq", __func__);
     AVDT_AbortReq(p_scb->avdt_handle);
   }
+  /** M: Bug fix for avrcp version dynamic adjust. @{ */
+  MtkRcCheckNeedDoSdp(p_scb->open_api.bd_addr, (uint8_t)(p_scb->hdi + 1));
+  /** @} */
 }
 
 /*******************************************************************************
@@ -1360,6 +1408,14 @@ void bta_av_do_close(tBTA_AV_SCB* p_scb, UNUSED_ATTR tBTA_AV_DATA* p_data) {
   p_scb->started = false;
   p_scb->use_rtp_header_marker_bit = false;
 
+/** M: Bug fix for When doing A2DP close, cancel SDP if it has been started to avoid NE @{ */
+  /* Cancel SDP if it had been started. */
+  if(p_scb->sdp_discovery_started)
+  {
+    APPL_TRACE_EVENT("bta_av_do_close: Cancel SDP if it had been started.");
+    (void)SDP_CancelServiceSearch (A2D_Get_Disc_DB());
+  }
+/** @} */
   /* drop the buffers queued in L2CAP */
   L2CA_FlushChannel(p_scb->l2c_cid, L2CAP_FLUSH_CHANS_ALL);
 
@@ -1674,7 +1730,20 @@ void bta_av_open_failed(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
     bta_av_data.open = open;
     (*bta_av_cb.p_cback)(BTA_AV_OPEN_EVT, &bta_av_data);
   } else {
-    AVDT_DisconnectReq(p_scb->PeerAddress(), &bta_av_proc_stream_evt);
+    /** M: Bug fix for Bta and btif state not change to idle, when signal channel disconnect  @{ */
+    uint16_t ret;
+    ret = AVDT_DisconnectReq(p_scb->PeerAddress(), &bta_av_proc_stream_evt);
+
+    if (AVDT_BAD_PARAMS == ret) {
+       APPL_TRACE_WARNING("ccb is null, notify bta and btif to change state");
+       tBTA_AV_REJECT reject;
+       reject.bd_addr = p_scb->PeerAddress();
+       reject.hndl = p_scb->hndl;
+       (*bta_av_cb.p_cback)(BTA_AV_REJECT_EVT, (tBTA_AV *) &reject);
+
+       bta_av_ssm_execute(p_scb, BTA_AV_AVDT_DISCONNECT_EVT, NULL);
+    }
+    /** @} */
   }
 }
 
@@ -1705,7 +1774,7 @@ void bta_av_getcap_results(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
   APPL_TRACE_DEBUG("%s: media type 0x%x, 0x%x", __func__, media_type,
                    p_scb->media_type);
   APPL_TRACE_DEBUG("%s: codec: %s", __func__,
-                   A2DP_CodecInfoString(p_scb->cfg.codec_info).c_str());
+                   A2DP_CodecInfoString(p_scb->peer_cap.codec_info).c_str());
 
   /* if codec present and we get a codec configuration */
   if ((p_scb->peer_cap.num_codec != 0) && (media_type == p_scb->media_type) &&
@@ -1853,6 +1922,15 @@ void bta_av_do_start(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
       (cur_role == BTM_ROLE_MASTER)) {
     clear_policy |= HCI_ENABLE_MASTER_SLAVE_SWITCH;
   }
+
+  /** M: Disable sniff mode during a2dp streaming @{ */
+  #if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+    if (interop_mtk_match_addr_name(
+          INTEROP_MTK_DISABLE_SNIFF_MODE_WHEN_A2DP_START, &(p_scb->PeerAddress()))) {
+      clear_policy |= HCI_ENABLE_SNIFF_MODE;
+   }
+  #endif
+  /** @} */
 
   bta_sys_clear_policy(BTA_ID_AV, clear_policy, p_scb->PeerAddress());
 
@@ -2475,6 +2553,11 @@ void bta_av_str_closed(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
     event = BTA_AV_OPEN_EVT;
     p_scb->open_status = BTA_AV_SUCCESS;
 
+    /** M: Bug fix for a2dp stream channel not close @{ */
+    if (bta_av_cb.audio_open_cnt >= 1)
+      bta_sys_conn_close(BTA_ID_AV, bta_av_cb.audio_open_cnt, p_scb->PeerAddress());
+    /** @} */
+
     bta_sys_conn_close(BTA_ID_AV, p_scb->app_id, p_scb->PeerAddress());
     bta_av_cleanup(p_scb, p_data);
     (*bta_av_cb.p_cback)(event, &data);
@@ -2489,6 +2572,11 @@ void bta_av_str_closed(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
       data.close.chnl = p_scb->chnl;
       data.close.hndl = p_scb->hndl;
       event = BTA_AV_CLOSE_EVT;
+
+      /** M: Bug fix for a2dp stream channel not close @{ */
+      if (bta_av_cb.audio_open_cnt >= 1)
+        bta_sys_conn_close(BTA_ID_AV, bta_av_cb.audio_open_cnt, p_scb->PeerAddress());
+      /** @} */
 
       bta_sys_conn_close(BTA_ID_AV, p_scb->app_id, p_scb->PeerAddress());
       bta_av_cleanup(p_scb, p_data);
@@ -2544,7 +2632,9 @@ void bta_av_suspend_cfm(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
   suspend_rsp.status = BTA_AV_SUCCESS;
   if (err_code && (err_code != AVDT_ERR_BAD_STATE)) {
     /* Disable suspend feature only with explicit rejection(not with timeout) */
-    if (err_code != AVDT_ERR_TIMEOUT) {
+    /** M: Bug fix for should not disable suspend feature @{ */
+    if (err_code != AVDT_ERR_TIMEOUT && err_code != AVDT_ERR_CONNECT) {
+    /** @} */
       p_scb->suspend_sup = false;
     }
     suspend_rsp.status = BTA_AV_FAIL;
@@ -2765,7 +2855,9 @@ void bta_av_suspend_cont(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
       APPL_TRACE_ERROR("%s: suspend rejected, try close", __func__);
       /* Disable suspend feature only with explicit rejection(not with timeout)
        */
-      if (err_code != AVDT_ERR_TIMEOUT) {
+      /** M: Bug fix for should not disable suspend feature @{ */
+      if (err_code != AVDT_ERR_TIMEOUT && err_code != AVDT_ERR_CONNECT) {
+      /** @} */
         p_scb->suspend_sup = false;
       }
       /* drop the buffers queued in L2CAP */
@@ -2962,6 +3054,8 @@ void bta_av_chk_2nd_start(tBTA_AV_SCB* p_scb,
 void bta_av_open_rc(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
   APPL_TRACE_DEBUG("%s: use_rc: %d, wait: 0x%x role: 0x%x", __func__,
                    p_scb->use_rc, p_scb->wait, p_scb->role);
+  /** M: Bug Fix: Store the BT on/off status. @{ */
+  char bt_state[PROPERTY_VALUE_MAX] = {0};
   if ((p_scb->wait & BTA_AV_WAIT_ROLE_SW_BITS) &&
       (p_scb->q_tag == BTA_AV_Q_TAG_START)) {
     /* waiting for role switch for some reason & the timer expires */
@@ -3006,8 +3100,16 @@ void bta_av_open_rc(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
       /* use main SM for AVRC SDP activities */
       if (is_new_avrcp_enabled()) {
         APPL_TRACE_WARNING("%s: Using the new AVRCP Profile", __func__);
-        bluetooth::avrcp::AvrcpService::Get()->ConnectDevice(
-            p_scb->PeerAddress());
+        /** M: Avoid use it before avrcp service init && BT should on@{ */
+        if (bluetooth::avrcp::AvrcpService::Get() != nullptr) {
+          // The value '0' means BT is off and '1' means on.
+          osi_property_get("persist.vendor.bluetooth.state", bt_state, "1");
+          if (0 == strncmp(bt_state, "1", 1)) {
+              bluetooth::avrcp::AvrcpService::Get()->ConnectDevice(
+                p_scb->PeerAddress());
+          }
+        }
+        /** @} */
       } else {
         bta_av_rc_disc((uint8_t)(p_scb->hdi + 1));
       }
@@ -3056,14 +3158,14 @@ void bta_av_open_at_inc(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
 }
 
 void offload_vendor_callback(tBTM_VSC_CMPL* param) {
-  uint8_t status = 0;
+  tBTA_AV value{0};
   uint8_t sub_opcode = 0;
   if (param->param_len) {
     APPL_TRACE_DEBUG("%s: param_len = %d status = %d", __func__,
                      param->param_len, param->p_param_buf[0]);
-    status = param->p_param_buf[0];
+    value.status = param->p_param_buf[0];
   }
-  if (status == 0) {
+  if (value.status == 0) {
     sub_opcode = param->p_param_buf[1];
     APPL_TRACE_DEBUG("%s: subopcode = %d", __func__, sub_opcode);
     switch (sub_opcode) {
@@ -3071,7 +3173,7 @@ void offload_vendor_callback(tBTM_VSC_CMPL* param) {
         APPL_TRACE_DEBUG("%s: VS_HCI_STOP_A2DP_MEDIA successful", __func__);
         break;
       case VS_HCI_A2DP_OFFLOAD_START:
-        (*bta_av_cb.p_cback)(BTA_AV_OFFLOAD_START_RSP_EVT, (tBTA_AV*)&status);
+        (*bta_av_cb.p_cback)(BTA_AV_OFFLOAD_START_RSP_EVT, &value);
         break;
       default:
         break;
@@ -3080,7 +3182,7 @@ void offload_vendor_callback(tBTM_VSC_CMPL* param) {
     APPL_TRACE_DEBUG("%s: Offload failed for subopcode= %d", __func__,
                      sub_opcode);
     if (param->opcode != VS_HCI_A2DP_OFFLOAD_STOP)
-      (*bta_av_cb.p_cback)(BTA_AV_OFFLOAD_START_RSP_EVT, (tBTA_AV*)&status);
+      (*bta_av_cb.p_cback)(BTA_AV_OFFLOAD_START_RSP_EVT, &value);
   }
 }
 

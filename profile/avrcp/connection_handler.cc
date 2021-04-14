@@ -32,6 +32,12 @@
 #include "osi/include/allocator.h"
 #include "osi/include/properties.h"
 
+/** M: Add blacklist control of absolute volume @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+/** @} */
+
 namespace bluetooth {
 namespace avrcp {
 
@@ -50,10 +56,14 @@ bool IsAbsoluteVolumeEnabled(const RawAddress* bdaddr) {
     LOG(INFO) << "Absolute volume disabled by property";
     return false;
   }
-  if (interop_match_addr(INTEROP_DISABLE_ABSOLUTE_VOLUME, bdaddr)) {
-    LOG(INFO) << "Absolute volume disabled by IOP table";
+  /** M: Add mtk blacklist of absolute volume @{ */
+  #if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr_name(INTEROP_MTK_DISABLE_ABSOLUTE_VOLUME, bdaddr)) {
+    LOG(INFO) << "Absolute volume disabled by black table";
     return false;
   }
+  #endif
+  /** @} */
   return true;
 }
 
@@ -82,13 +92,22 @@ bool ConnectionHandler::Initialize(const ConnectionCallback& callback,
 }
 
 bool ConnectionHandler::CleanUp() {
-  CHECK(instance_ != nullptr);
+  //CHECK(instance_ != nullptr);
+  if (instance_ == nullptr) {
+    LOG(WARNING) << " instance_ is null";
+    return false;
+  }
 
   // TODO (apanicke): Cleanup the SDP Entries here
   for (const auto& entry : instance_->device_map_) {
     entry.second->DeviceDisconnected();
     instance_->avrc_->Close(entry.first);
   }
+  //close the open but not connected device resource
+  for (const auto& entry : instance_->pre_dev_map_) {
+    instance_->avrc_->Close(entry.first);
+  }
+  instance_->pre_dev_map_.clear();
   instance_->device_map_.clear();
   instance_->feature_map_.clear();
 
@@ -120,11 +139,19 @@ bool ConnectionHandler::ConnectDevice(const RawAddress& bdaddr) {
                               uint16_t version, uint16_t features) {
     LOG(INFO) << __PRETTY_FUNCTION__
               << " SDP Completed features=" << loghex(features);
+    /** M: Check nullptr to avoid NE. disable bt will clean instance_ @{ */
+    if (instance_ == nullptr) {
+      LOG(ERROR) << __PRETTY_FUNCTION__ << ": connection handler is nullptr ";
+      return;
+    }
+    /** @} */
     if (status != AVRC_SUCCESS || !(features & BTA_AV_FEAT_RCCT)) {
       LOG(ERROR) << "Failed to do SDP: status=" << loghex(status)
                  << " features=" << loghex(features)
                  << " supports controller: " << (features & BTA_AV_FEAT_RCCT);
-      instance_->connection_cb_.Run(std::shared_ptr<Device>());
+      // should not connect avrcp if sdp fail or remote don't support avrcp
+      return;
+      // instance_->connection_cb_.Run(std::shared_ptr<Device>());
     }
 
     instance_->feature_map_.emplace(bdaddr, features);
@@ -152,7 +179,11 @@ std::vector<std::shared_ptr<Device>> ConnectionHandler::GetListOfDevices()
     const {
   std::vector<std::shared_ptr<Device>> list;
   for (const auto& device : device_map_) {
-    list.push_back(device.second);
+    /** M: Check nullptr to avoid NE. @{ */
+    if (device.second) {
+      list.push_back(device.second);
+    }
+    /** @} */
   }
   return list;
 }
@@ -205,6 +236,10 @@ bool ConnectionHandler::AvrcpConnect(bool initiator, const RawAddress& bdaddr) {
   uint16_t status = avrc_->Open(&handle, &open_cb, bdaddr);
   LOG(INFO) << __PRETTY_FUNCTION__ << ": handle=" << loghex(handle)
             << " status= " << loghex(status);
+  //if open success fully, add this device to pre_dev_map_
+  if (status == AVRC_SUCCESS) {
+    pre_dev_map_[handle] = nullptr;
+  }
   return status == AVRC_SUCCESS;
 }
 
@@ -230,8 +265,14 @@ void ConnectionHandler::InitiatorControlCb(uint8_t handle, uint8_t event,
 
       bool supports_browsing = feature_iter->second & BTA_AV_FEAT_BROWSE;
 
-      if (supports_browsing) {
-        avrc_->OpenBrowse(handle, AVCT_INT);
+      if (supports_browsing
+          /** M: avrcp 1.3 should not connect browsing @{ */
+          #if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+          && !interop_mtk_match_addr_name(INTEROP_MTK_AVRCP13_USE, peer_addr)
+          #endif
+          /** @} */
+        ) {
+          avrc_->OpenBrowse(handle, AVCT_INT);
       }
 
       // TODO (apanicke): Implement a system to cache SDP entries. For most
@@ -246,12 +287,18 @@ void ConnectionHandler::InitiatorControlCb(uint8_t handle, uint8_t event,
           *peer_addr, !supports_browsing, callback, ctrl_mtu, browse_mtu);
 
       device_map_[handle] = newDevice;
+      //remove this handle from pre_dev_map_
+      pre_dev_map_.erase(handle);
       // TODO (apanicke): Create the device with all of the interfaces it
       // needs. Return the new device where the service will register the
       // interfaces it needs.
       connection_cb_.Run(newDevice);
 
-      if (feature_iter->second & BTA_AV_FEAT_ADV_CTRL) {
+      if (feature_iter->second & BTA_AV_FEAT_ADV_CTRL
+          #if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+          && !interop_mtk_match_addr_name(INTEROP_MTK_AVRCP13_USE, peer_addr)
+          #endif
+      ) {
         newDevice->RegisterVolumeChanged();
       } else if (instance_->vol_ != nullptr) {
         instance_->vol_->DeviceConnected(newDevice->GetAddress());
@@ -317,6 +364,8 @@ void ConnectionHandler::AcceptorControlCb(uint8_t handle, uint8_t event,
           *peer_addr, false, callback, ctrl_mtu, browse_mtu);
 
       device_map_[handle] = newDevice;
+      //remove this handle from pre_dev_map_
+      pre_dev_map_.erase(handle);
       connection_cb_.Run(newDevice);
 
       LOG(INFO) << __PRETTY_FUNCTION__
@@ -410,6 +459,13 @@ void ConnectionHandler::MessageCb(uint8_t handle, uint8_t label, uint8_t opcode,
 void ConnectionHandler::SdpCb(const RawAddress& bdaddr, SdpCallback cb,
                               tSDP_DISCOVERY_DB* disc_db, uint16_t status) {
   LOG(INFO) << __PRETTY_FUNCTION__ << ": SDP lookup callback received";
+
+  /** M: Check nullptr to avoid NE. disable bt will clean instance_ @{ */
+  if (instance_ == nullptr) {
+    LOG(ERROR) << __PRETTY_FUNCTION__ << ": connection handler is nullptr ";
+    return;
+  }
+  /** @} */
 
   if (status != AVRC_SUCCESS) {
     LOG(ERROR) << __PRETTY_FUNCTION__
@@ -536,6 +592,13 @@ void ConnectionHandler::SendMessage(
   // doesn't need to be processed. In the future, this is the only place sending
   // the packet so none of these layer specific fields will be used.
   pkt->event = 0xFFFF;
+
+  /** M: Handle for PTS AVRCP/TG/RCR/BV-02-C AVRCP/TG/RCR/BV-04-C */
+  uint16_t op_code = (uint16_t)(::bluetooth::Packet::Specialize<Packet>(packet)->GetOpcode());
+  DLOG(INFO) << "SendMessage to Opcode=" << op_code;
+  if (!browse && (op_code == (uint16_t)(Opcode::VENDOR))) {
+    pkt->event = op_code;
+  }
 
   // TODO (apanicke): This layer specific stuff can go away once we move over
   // to the new service.

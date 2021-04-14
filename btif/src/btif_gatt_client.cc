@@ -258,6 +258,8 @@ void btif_gattc_open_impl(int client_if, RawAddress address, bool is_direct,
   int device_type = 0;
   tGATT_TRANSPORT transport = (tGATT_TRANSPORT)GATT_TRANSPORT_LE;
 
+  BTIF_TRACE_DEBUG("%s get_type=%d, get_device_type=%d, device_type=%d transport_p:%d", __func__, btif_get_address_type(address, &addr_type), btif_get_device_type(address, &device_type), device_type, transport_p);
+
   if (btif_get_address_type(address, &addr_type) &&
       btif_get_device_type(address, &device_type) &&
       device_type != BT_DEVICE_TYPE_BREDR) {

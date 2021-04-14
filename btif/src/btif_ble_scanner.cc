@@ -45,6 +45,10 @@
 #include "stack/include/btu.h"
 #include "vendor_api.h"
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mtk_btif_ble_scanner.h"
+#endif
+
 using base::Bind;
 using base::Owned;
 using std::vector;
@@ -97,6 +101,12 @@ void bta_batch_scan_threshold_cb(tBTM_BLE_REF_VALUE ref_value) {
 void bta_batch_scan_reports_cb(int client_id, tBTA_STATUS status,
                                uint8_t report_format, uint8_t num_records,
                                std::vector<uint8_t> data) {
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  mtk_bta_batch_scan_reports_cb(client_id, status, report_format, num_records, data);
+#endif
+
+
   SCAN_CBACK_IN_JNI(batchscan_reports_cb, client_id, status, report_format,
                     num_records, std::move(data));
 }

@@ -23,3 +23,5 @@
 // Debug API
 
 void btif_debug_init(void);
+
+void btif_debug_cleanup(void);

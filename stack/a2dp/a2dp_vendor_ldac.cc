@@ -1289,6 +1289,9 @@ bool A2dpCodecConfigLdacBase::setCodecConfig(const uint8_t* p_peer_codec_info,
   //
   // Copy the codec-specific fields if they are not zero
   //
+  /** M: Set default LDAC QMI to MID. @{ */
+  codec_config_.codec_specific_1 = A2DP_LDAC_QUALITY_MID;
+  /** @} */
   if (codec_user_config_.codec_specific_1 != 0)
     codec_config_.codec_specific_1 = codec_user_config_.codec_specific_1;
   if (codec_user_config_.codec_specific_2 != 0)

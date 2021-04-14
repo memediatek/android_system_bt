@@ -40,6 +40,10 @@
 #include "stack/gatt/connection_manager.h"
 #include "stack_config.h"
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+
 using base::StringPrintf;
 
 static void l2cble_start_conn_update(tL2C_LCB* p_lcb);
@@ -149,6 +153,12 @@ bool L2CA_UpdateBleConnParams(const RawAddress& rem_bda, uint16_t min_int,
 bool L2CA_EnableUpdateBleConnParams(const RawAddress& rem_bda, bool enable) {
   if (stack_config_get_interface()->get_pts_conn_updates_disabled())
     return false;
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr_name(INTEROP_MTK_LE_DISABLE_FAST_CONNECTION,
+                                  &rem_bda))
+    return false;
+#endif
 
   tL2C_LCB* p_lcb;
 
@@ -397,6 +407,16 @@ static void l2cble_start_conn_update(tL2C_LCB* p_lcb) {
   } else {
     /* application allows to do update, if we were delaying one do it now */
     if (p_lcb->conn_update_mask & L2C_BLE_NEW_CONN_PARAM) {
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      if (interop_mtk_match_addr_name(
+              INTEROP_MTK_LE_CONN_TIMEOUT_ADJUST,
+              &p_lcb->remote_bd_addr)) {
+        p_lcb->timeout = 2000;
+        L2CAP_TRACE_ERROR("change the LE supervision timeout as : %d",
+                          p_lcb->timeout);
+      }
+#endif
+
       /* if both side 4.1, or we are master device, send HCI command */
       if (p_lcb->link_role == HCI_ROLE_MASTER
 #if (BLE_LLT_INCLUDED == TRUE)
@@ -521,6 +541,11 @@ void l2cble_process_sig_cmd(tL2C_LCB* p_lcb, uint8_t* p, uint16_t pkt_len) {
       STREAM_TO_UINT16(timeout, p);      /* 0x000A - 0x0C80 */
       /* If we are a master, the slave wants to update the parameters */
       if (p_lcb->link_role == HCI_ROLE_MASTER) {
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+        if (!interop_mtk_match_addr_name(
+                INTEROP_MTK_LE_CONN_INT_MIN_LIMIT_ACCEPT,
+                &p_lcb->remote_bd_addr))
+#endif
         L2CA_AdjustConnectionIntervals(&min_interval, &max_interval,
                                        BTM_BLE_CONN_INT_MIN_LIMIT);
 
@@ -537,6 +562,19 @@ void l2cble_process_sig_cmd(tL2C_LCB* p_lcb, uint8_t* p, uint16_t pkt_len) {
           l2cu_send_peer_ble_par_rsp(p_lcb, L2CAP_CFG_UNACCEPTABLE_PARAMS, id);
         } else {
           l2cu_send_peer_ble_par_rsp(p_lcb, L2CAP_CFG_OK, id);
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+          if (interop_mtk_match_addr_name(
+                  INTEROP_MTK_LE_CONN_LATENCY_ADJUST,
+                  &p_lcb->remote_bd_addr))
+            latency = BTM_BLE_CONN_SLAVE_LATENCY_DEF;
+
+          if (interop_mtk_match_addr_name(
+                  INTEROP_MTK_LE_CONN_INT_MIN_LIMIT_ADJUST,
+                  &p_lcb->remote_bd_addr))
+            L2CA_AdjustConnectionIntervals(&min_interval, &max_interval,
+                                           BTM_BLE_CONN_INT_MIN_LIMIT);
+#endif
 
           p_lcb->min_interval = min_interval;
           p_lcb->max_interval = max_interval;

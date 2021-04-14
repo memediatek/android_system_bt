@@ -19,6 +19,7 @@
 #pragma once
 
 #include <hardware/bluetooth_headset_interface.h>
+#include "profile/avrcp/device.h"
 
 namespace bluetooth {
 namespace headset {
@@ -44,6 +45,26 @@ bool IsCallIdle();
  * @return BT_STATUS_SUCCESS on success, BT_STATUS_FAIL otherwise
  */
 bt_status_t ExecuteService(bool b_enable);
+
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+/** M: Change for AVRCP: check if received atd at command. @{ */
+/**
+ * Check whether there is a ATD at command in progress.
+ *
+ * @return true if reveiced ATD at command
+ */
+bool isATDReceived();
+/** @} */
+
+/** M: Change for AVRCP: get sco disconnect time. @{ */
+/**
+ * Get SCO disconnect time when avrcp receive key.
+ *
+ * @return the latest sco disconnect time
+ */
+long getScoDiscTime();
+/** @} */
+#endif
 
 }  // namespace headset
 }  // namespace bluetooth

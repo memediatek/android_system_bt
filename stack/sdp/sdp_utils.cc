@@ -301,7 +301,11 @@ tCONN_CB* sdpu_find_ccb_by_cid(uint16_t cid) {
 
   /* Look through each connection control block */
   for (xx = 0, p_ccb = sdp_cb.ccb; xx < SDP_MAX_CONNECTIONS; xx++, p_ccb++) {
-    if ((p_ccb->con_state != SDP_STATE_IDLE) && (p_ccb->connection_id == cid))
+    if ((p_ccb->con_state != SDP_STATE_IDLE) &&
+        /** M: Serialize SDP requests @{ */
+        (p_ccb->con_state != SDP_STATE_CONN_PEND) &&
+        /** @} */
+        (p_ccb->connection_id == cid))
       return (p_ccb);
   }
 

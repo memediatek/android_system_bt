@@ -35,6 +35,10 @@
 #include "btu.h"
 #include "osi/include/osi.h"
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+
 /*******************************************************************************
  *
  * Function         avdt_ccb_clear_ccb
@@ -150,9 +154,29 @@ void avdt_ccb_hdl_discover_cmd(AvdtpCcb* p_ccb, tAVDT_CCB_EVT* p_data) {
   p_data->msg.discover_rsp.p_sep_info = sep_info;
   p_data->msg.discover_rsp.num_seps = 0;
 
+  #if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+    bool aacblacklist = false;
+    if (interop_mtk_match_addr_name(INTEROP_MTK_A2DP_DISABLE_AAC_CODEC,
+                                                               &p_ccb->peer_addr)) {
+      aacblacklist = true;
+      AVDT_TRACE_DEBUG("%s: aacblacklist=%d", __func__, aacblacklist);
+    }
+  #endif
+
   /* for all allocated scbs */
   for (int i = 0; i < AVDT_NUM_SEPS; i++, p_scb++) {
     if (p_scb->allocated) {
+
+      #if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+        if (p_scb->ScbHandle() ==2) {// 2 is aac sepid
+          if(aacblacklist) {
+            AVDT_TRACE_DEBUG("%s: disable %s AAC codec", __func__,
+                       p_ccb->peer_addr.ToString().c_str());
+            continue;
+          }
+        }
+      #endif
+
       /* copy sep info */
       sep_info[p_data->msg.discover_rsp.num_seps].in_use = p_scb->in_use;
       sep_info[p_data->msg.discover_rsp.num_seps].seid = p_scb->ScbHandle();
@@ -162,6 +186,7 @@ void avdt_ccb_hdl_discover_cmd(AvdtpCcb* p_ccb, tAVDT_CCB_EVT* p_data) {
           p_scb->stream_config.tsep;
 
       p_data->msg.discover_rsp.num_seps++;
+      AVDT_TRACE_DEBUG("%s: num seps=%d", __func__, p_data->msg.discover_rsp.num_seps);
     }
   }
 

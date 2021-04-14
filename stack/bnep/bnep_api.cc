@@ -79,6 +79,12 @@ tBNEP_RESULT BNEP_Register(tBNEP_REGISTER* p_reg_info) {
   if (bnep_register_with_l2cap()) return BNEP_SECURITY_FAIL;
 
   bnep_cb.profile_registered = true;
+/** M: @{Add congestion counter to record congestion status. */
+/**    if one l2cap channel for bnep is broken, */
+/**    flow control can still work fine. */
+  bnep_cb.congestion_cnt = 0;
+/** @} */
+
   return BNEP_SUCCESS;
 }
 

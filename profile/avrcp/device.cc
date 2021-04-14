@@ -25,6 +25,15 @@
 #include "packet/avrcp/set_absolute_volume.h"
 #include "packet/avrcp/set_addressed_player.h"
 #include "stack_config.h"
+#include "mediatek/include/mtk_bta_av_act.h"
+#include "btif/avrcp/avrcp_service.h"
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+
+/** M: Ignore play while SCO exist. @{ */
+#include "btif/include/btif_hf.h"
+/** @} */
 
 namespace bluetooth {
 namespace avrcp {
@@ -46,7 +55,9 @@ Device::Device(
       avrcp13_compatibility_(avrcp13_compatibility),
       send_message_cb_(send_msg_cb),
       ctrl_mtu_(ctrl_mtu),
-      browse_mtu_(browse_mtu) {}
+      browse_mtu_(browse_mtu) {
+  avrcp13_compatibility_ = MtkRcIsAvrcp13Compatibility(bdaddr);
+}
 
 void Device::RegisterInterfaces(MediaInterface* media_interface,
                                 A2dpInterface* a2dp_interface,
@@ -111,6 +122,9 @@ void Device::VendorPacketHandler(uint8_t label,
         // TODO (apanicke): Add a retry mechanism if the response has a
         // different volume than the one we set. For now, we don't care
         // about the response to this message.
+        /** M: receive rsp, should erase label. @{ */
+        active_labels_.erase(label);
+        /** @} */
         break;
       default:
         DEVICE_LOG(WARNING)
@@ -171,6 +185,16 @@ void Device::VendorPacketHandler(uint8_t label,
                                                       label, set_addressed_player_request));
     } break;
 
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+    case CommandPdu::LIST_APPLICATION_SETTING_ATTRIBUTES:
+    case CommandPdu::LIST_APPLICATION_SETTING_VALUES:
+    case CommandPdu::GET_CUR_PLAYER_APPLICATION_VALUE:
+    case CommandPdu::SET_PLAYER_APPLICATION_SETTING_VALUE:
+    case CommandPdu::GET_PLAYER__APPLICATION_ATTRIBUTES_TEXT:
+    case CommandPdu::GET_PLAYER_APPLICATION_VALUE_TEXT: {
+      SettingPacketHandler(label, pkt);
+    } break;
+#endif
     default: {
       DEVICE_LOG(ERROR) << "Unhandled Vendor Packet: " << pkt->ToString();
       auto response = RejectBuilder::MakeBuilder(
@@ -213,6 +237,9 @@ void Device::HandleGetCapabilities(
         response->AddEvent(Event::UIDS_CHANGED);
         response->AddEvent(Event::NOW_PLAYING_CONTENT_CHANGED);
       }
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+      response->AddEvent(Event::PLAYER_APPLICATION_SETTING_CHANGED);
+#endif
 
       send_message(label, false, std::move(response));
     } break;
@@ -244,6 +271,21 @@ void Device::HandleNotification(
       media_interface_->GetNowPlayingList(
           base::Bind(&Device::TrackChangedNotificationResponse,
                      weak_ptr_factory_.GetWeakPtr(), label, true));
+      /** M: IOT soution for carkit HZ audio 9825 @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+    if (interop_mtk_match_addr(
+            INTEROP_MTK_AVRCP_SEND_EXTRA_TRACK_CHANGE, &address_)) {
+        media_interface_->GetPlayStatus(base::Bind(
+            [](base::WeakPtr<Device> d, uint8_t label, PlayStatus state) {
+              if (!d) return;
+              if (state.position == 0xffffffff || state.position < 10000) {
+                 LOG(INFO) << __func__ << "send extra track, positon = " <<state.position;
+                 d->HandleTrackUpdate();
+               }
+             }, weak_ptr_factory_.GetWeakPtr(), label));
+    }
+#endif
+      /** @} */
     } break;
 
     case Event::PLAYBACK_STATUS_CHANGED: {
@@ -252,8 +294,28 @@ void Device::HandleNotification(
                      weak_ptr_factory_.GetWeakPtr(), label, true));
     } break;
 
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+    case Event::PLAYER_APPLICATION_SETTING_CHANGED: {
+      player_app_setting_changed_ = Notification(true, label);
+      media_interface_->GetAppSettingChange(
+          base::Bind(&Device::AppSettingChangeNotificationResponse,
+                     weak_ptr_factory_.GetWeakPtr(), label, true));
+    } break;
+#endif
     case Event::PLAYBACK_POS_CHANGED: {
       play_pos_interval_ = pkt->GetInterval();
+/** M: Carkit 5s interval cause pos issue @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      if (play_pos_interval_ == 5 && interop_mtk_match_addr(
+              INTEROP_MTK_AVRCP_CHANGE_POS_INTERVAL, &address_)) {
+        DEVICE_VLOG(2) << __func__ << "Change position interval from 5s to 1s";
+        play_pos_interval_ = 1;
+      }
+#endif
+/** @} */
+      //interval 0 is not allowed by spec
+      if (play_pos_interval_ == 0 || play_pos_interval_ == 0xFFFFFFFF)
+        play_pos_interval_ = 1;
       media_interface_->GetPlayStatus(
           base::Bind(&Device::PlaybackPosNotificationResponse,
                      weak_ptr_factory_.GetWeakPtr(), label, true));
@@ -358,6 +420,10 @@ void Device::HandleVolumeChanged(
 
   // We only update on interim and just re-register on changes.
   if (!pkt->IsInterim()) {
+    /** M: Fix IOT box send volume change event even we don't register @{ */
+    if (active_labels_.find(label) == active_labels_.end())
+      return;
+    /** @} */
     active_labels_.erase(label);
     RegisterVolumeChanged();
     return;
@@ -381,6 +447,14 @@ void Device::HandleVolumeChanged(
     return;
   }
 
+  /** M: remote send same volume value @{ */
+  int8_t temp_volume = pkt->GetVolume();
+  if (temp_volume == volume_) {
+    DEVICE_VLOG(3) <<"Volume not change, return ";
+    return;
+  }
+  /** @} */
+
   volume_ = pkt->GetVolume();
   DEVICE_VLOG(1) << __func__ << ": Volume has changed to " << (uint32_t)volume_;
   volume_interface_->SetVolume(volume_);
@@ -389,6 +463,12 @@ void Device::HandleVolumeChanged(
 void Device::SetVolume(int8_t volume) {
   // TODO (apanicke): Implement logic for Multi-AVRCP
   DEVICE_VLOG(1) << __func__ << ": volume=" << (int)volume;
+  /** M: Some device don't response the same volume. @{ */
+  if (volume_ == volume) {
+    DEVICE_VLOG(3) << " return since volume is the same";
+    return;
+  }
+  /** @} */
   auto request = SetAbsoluteVolumeRequestBuilder::MakeBuilder(volume);
 
   uint8_t label = MAX_TRANSACTION_LABEL;
@@ -407,7 +487,7 @@ void Device::SetVolume(int8_t volume) {
 void Device::TrackChangedNotificationResponse(uint8_t label, bool interim,
                                               std::string curr_song_id,
                                               std::vector<SongInfo> song_list) {
-  DEVICE_VLOG(1) << __func__;
+  DEVICE_VLOG(1) << __func__ <<": curr_song_id= "<< curr_song_id;
   uint64_t uid = 0;
 
   if (interim) {
@@ -422,8 +502,9 @@ void Device::TrackChangedNotificationResponse(uint8_t label, bool interim,
   now_playing_ids_.clear();
   for (const SongInfo& song : song_list) {
     now_playing_ids_.insert(song.media_id);
+    DEVICE_VLOG(2) << __func__ << ":song.media_id= " << song.media_id;
     if (curr_song_id == song.media_id) {
-      DEVICE_VLOG(3) << __func__ << ": Found media ID match for "
+      DEVICE_VLOG(1) << __func__ << ": Found media ID match for "
                      << song.media_id;
       uid = now_playing_ids_.get_uid(curr_song_id);
     }
@@ -436,6 +517,16 @@ void Device::TrackChangedNotificationResponse(uint8_t label, bool interim,
       DEVICE_LOG(WARNING) << __func__ << ": pts test mode";
       uid = 0xffffffffffffffff;
     }
+    /** M: Changed the track id for some IOT device. @{ */
+    // Some devices don't get the song info if the track id no change.
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+    else if (interop_mtk_match_addr_name(INTEROP_MTK_AVRCP_USE_FAKE_ID,
+                                                                  &address_)) {
+      uid = now_playing_ids_.get_fake_track_id(interim);
+      DEVICE_VLOG(1) << __func__ << ": fake track id =  " << uid;
+    }
+#endif
+    /** @} */
   }
 
   auto response = RegisterNotificationResponseBuilder::MakeTrackChangedBuilder(
@@ -450,7 +541,51 @@ void Device::TrackChangedNotificationResponse(uint8_t label, bool interim,
 void Device::PlaybackStatusNotificationResponse(uint8_t label, bool interim,
                                                 PlayStatus status) {
   DEVICE_VLOG(1) << __func__;
+//IOT device use music status only
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (!interop_mtk_match_addr_name(INTEROP_MTK_AVRCP_USE_MUSIC_ONLY,
+                                                         &address_))
+#endif
+  {
+    /** M:third party apk not rsp play status, check from the audio status @{ */
+    if (status.state != PlayState::PLAYING && nullptr != AvrcpService::Get()) {
+      PlayState audio_state = AvrcpService::Get()->GetAudioState();
+      if (audio_state == PlayState::PLAYING) status.state = audio_state;
+    }
+    /** @} */
+  }
+//IOT device use a2dp status only
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr_name(INTEROP_MTK_AVRCP_USE_A2DP_ONLY,
+                                                         &address_)) {
+    /** M:IOT carkit need a2dp status to avoid send play key @{ */
+    if (nullptr != AvrcpService::Get()) {
+      status.state = AvrcpService::Get()->GetA2dpState();
+    }
+    /** @} */
+  }
+#endif
+
+  //M: bug fix for QQ music no song info when online pre/next
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr_name(INTEROP_MTK_AVRCP_FOR_QQ_PLAYER, &address_)) {
+    if (status.state == PlayState::STOPPED) {
+      status.state = PlayState::PAUSED;
+    }
+  }
+#endif
   if (status.state == PlayState::PAUSED) play_pos_update_cb_.Cancel();
+/** M: Fix IOT when status change to play @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if ((last_play_status_.state != PlayState::PLAYING)
+              && (status.state == PlayState::PLAYING)) {
+    //M: bug fix for some carkit need track info after playing to show pos
+    if (interop_mtk_match_addr_name(INTEROP_MTK_AVRCP_SEND_TRACK_WHEN_PLAY, &address_)) {
+        HandleTrackUpdate();
+    }
+  }
+#endif
+/** @} */
 
   if (interim) {
     play_status_changed_ = Notification(true, label);
@@ -460,7 +595,15 @@ void Device::PlaybackStatusNotificationResponse(uint8_t label, bool interim,
   }
 
   auto state_to_send = status.state;
-  if (!IsActive()) state_to_send = PlayState::PAUSED;
+  /** M: Send Play status to IOT carkit due to position not sync @{ */
+  if (!IsActive()
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      && !interop_mtk_match_addr_name(
+          INTEROP_MTK_UPDATE_PLAY_STATUS_TO_UNACTIVE_DEVICE, &address_)
+#endif
+     ) {
+     state_to_send = PlayState::PAUSED;
+  }
   if (!interim && state_to_send == last_play_status_.state) {
     DEVICE_VLOG(0) << __func__
                    << ": Not sending notification due to no state update "
@@ -470,9 +613,18 @@ void Device::PlaybackStatusNotificationResponse(uint8_t label, bool interim,
 
   last_play_status_.state = state_to_send;
 
+/** M: Carkit can't stop when fast_forward/rewind @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr(INTEROP_MTK_AVRCP_FASTFORWARD_REWIND_STATUS, &address_)) {
+    if (fast_forward_rewind_status_ != PlayState::ERROR)
+      state_to_send = fast_forward_rewind_status_;
+  }
+#endif
+/** @} */
+
   auto response =
       RegisterNotificationResponseBuilder::MakePlaybackStatusBuilder(
-          interim, IsActive() ? status.state : PlayState::PAUSED);
+          interim, state_to_send);
   send_message_cb_.Run(label, false, std::move(response));
 
   if (!interim) {
@@ -485,11 +637,28 @@ void Device::PlaybackPosNotificationResponse(uint8_t label, bool interim,
                                              PlayStatus status) {
   DEVICE_VLOG(4) << __func__;
 
+  if (status.position == 0xFFFFFFFF) {
+    status.position = 0;
+  }
+
   if (interim) {
     play_pos_changed_ = Notification(true, label);
   } else if (!play_pos_changed_.first) {
     DEVICE_VLOG(3) << __func__ << ": Device not registered for update";
     return;
+  }
+
+   /** M: when music give the same pos we still get position interval @{ */
+  // We still try to send updates while music is playing to the non active
+  // device even though the device thinks the music is paused. This makes
+  // the status bar on the remote device move.
+  if (status.state == PlayState::PLAYING && !IsInSilenceMode()) {
+    DEVICE_VLOG(2) << __func__ << ": Queue next play position update";
+    play_pos_update_cb_.Reset(base::Bind(&Device::HandlePlayPosUpdate,
+                                         weak_ptr_factory_.GetWeakPtr()));
+    base::MessageLoop::current()->task_runner()->PostDelayedTask(
+        FROM_HERE, play_pos_update_cb_.callback(),
+        base::TimeDelta::FromSeconds(play_pos_interval_));
   }
 
   if (!interim && last_play_status_.position == status.position) {
@@ -510,6 +679,7 @@ void Device::PlaybackPosNotificationResponse(uint8_t label, bool interim,
     play_pos_changed_ = Notification(false, 0);
   }
 
+  /** M: move this part to front @{
   // We still try to send updates while music is playing to the non active
   // device even though the device thinks the music is paused. This makes
   // the status bar on the remote device move.
@@ -521,6 +691,7 @@ void Device::PlaybackPosNotificationResponse(uint8_t label, bool interim,
         FROM_HERE, play_pos_update_cb_.callback(),
         base::TimeDelta::FromSeconds(play_pos_interval_));
   }
+  */
 }
 
 // TODO (apanicke): Finish implementing when we add support for more than one
@@ -542,7 +713,7 @@ void Device::AddressedPlayerNotificationResponse(
   // default NOTE: Using any browsing commands before the browsed player is set
   // is a violation of the AVRCP Spec but there are some carkits that try too
   // anyways
-  if (curr_browsed_player_id_ == -1) curr_browsed_player_id_ = curr_player;
+  curr_browsed_player_id_ = curr_player;
 
   auto response =
       RegisterNotificationResponseBuilder::MakeAddressedPlayerBuilder(
@@ -552,7 +723,6 @@ void Device::AddressedPlayerNotificationResponse(
   if (!interim) {
     active_labels_.erase(label);
     addr_player_changed_ = Notification(false, 0);
-    RejectNotification();
   }
 }
 
@@ -575,10 +745,72 @@ void Device::GetPlayStatusResponse(uint8_t label, PlayStatus status) {
   DEVICE_VLOG(2) << __func__ << ": position=" << status.position
                  << " duration=" << status.duration
                  << " state=" << status.state;
+
+  if (status.position == 0xFFFFFFFF) {
+    status.position = 0;
+  }
+
+  //IOT device use music status only
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (!interop_mtk_match_addr_name(INTEROP_MTK_AVRCP_USE_MUSIC_ONLY,
+                                                         &address_))
+#endif
+  {
+    /** M:third party apk not rsp play status, check from the audio status @{ */
+    if (status.state != PlayState::PLAYING && nullptr != AvrcpService::Get()) {
+      PlayState audio_state = AvrcpService::Get()->GetAudioState();
+      if (audio_state == PlayState::PLAYING) status.state = audio_state;
+    }
+    /** @} */
+  }
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr_name(INTEROP_MTK_AVRCP_USE_A2DP_ONLY,
+                                                         &address_)) {
+    /** M:IOT carkit need a2dp status to avoid send play key @{ */
+    if (nullptr != AvrcpService::Get()) {
+      status.state = AvrcpService::Get()->GetA2dpState();
+    }
+    /** @} */
+  }
+#endif
+
+  //M: bug fix for QQ music no song info when online pre/next
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr_name(INTEROP_MTK_AVRCP_FOR_QQ_PLAYER, &address_)) {
+    if (status.state == PlayState::STOPPED) {
+      status.state = PlayState::PAUSED;
+    }
+  }
+
+/** M: Carkit can't stop when fast_forward/rewind @{ */
+  if (interop_mtk_match_addr(INTEROP_MTK_AVRCP_FASTFORWARD_REWIND_STATUS, &address_)) {
+    if (fast_forward_rewind_status_ != PlayState::ERROR)
+      status.state = fast_forward_rewind_status_;
+  }
+/** @} */
+#endif
+  /** M: Send Play status to IOT carkit due to position not sync @{ */
+  if (!IsActive()
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      && !interop_mtk_match_addr_name(
+          INTEROP_MTK_UPDATE_PLAY_STATUS_TO_UNACTIVE_DEVICE, &address_)
+#endif
+     ) {
+    status.state = PlayState::PAUSED;
+  }
+  /** @} */
   auto response = GetPlayStatusResponseBuilder::MakeBuilder(
-      status.duration, status.position,
-      IsActive() ? status.state : PlayState::PAUSED);
+      status.duration, status.position, status.state);
   send_message(label, false, std::move(response));
+//M: bug fix for QQ music no song info when online pre/next
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr_name(INTEROP_MTK_AVRCP_FOR_QQ_PLAYER, &address_)) {
+    if (status.position == 0 && status.state == PlayState::PLAYING) {
+      SendMediaUpdate(true,true,true);
+    }
+  }
+#endif
 }
 
 void Device::GetElementAttributesResponse(
@@ -608,6 +840,17 @@ void Device::GetElementAttributesResponse(
 
   send_message(label, false, std::move(response));
 }
+
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+bool Device::isDropKey() {
+    DEVICE_VLOG(1) << __func__ << ": key_drop_ = " << key_drop_
+             << "; callIdle= " << bluetooth::headset::IsCallIdle()
+             << "; ATDReceived= " << bluetooth::headset::isATDReceived();
+
+  return (key_drop_ || !bluetooth::headset::IsCallIdle()
+          || bluetooth::headset::isATDReceived());
+}
+#endif
 
 void Device::MessageReceived(uint8_t label, std::shared_ptr<Packet> pkt) {
   if (!pkt->IsValid()) {
@@ -641,33 +884,60 @@ void Device::MessageReceived(uint8_t label, std::shared_ptr<Packet> pkt) {
           pass_through_packet->GetOperationId());
       send_message(label, false, std::move(response));
 
+#if defined(CALL_SCO_KEY_FEATURE) && (CALL_SCO_KEY_FEATURE == TRUE)
+      long disc_time = bluetooth::headset::getScoDiscTime();
+      long cur_time = time(NULL);
+      key_drop_ = ((cur_time - disc_time) < SCO_DISCONNECT_TIMER);
+      if (isDropKey())
+        return;
+#endif
+
       // TODO (apanicke): Use an enum for media key ID's
-      if (pass_through_packet->GetOperationId() == 0x44 &&
-          pass_through_packet->GetKeyState() == KeyState::PUSHED) {
+      /** M: put PLAY push/release in the same logic block @{ */
+      if (pass_through_packet->GetOperationId() == 0x44) {
         // We need to get the play status since we need to know
         // what the actual playstate is without being modified
         // by whether the device is active.
         media_interface_->GetPlayStatus(base::Bind(
-            [](base::WeakPtr<Device> d, PlayStatus s) {
+            [](base::WeakPtr<Device> d, KeyState ks, PlayStatus s) {
               if (!d) return;
 
-              if (!d->IsActive()) {
+              if (ks == KeyState::RELEASED && !d->IsActive()) {
                 LOG(INFO) << "Setting " << d->address_.ToString()
                           << " to be the active device";
                 d->media_interface_->SetActiveDevice(d->address_);
-
-                if (s.state == PlayState::PLAYING) {
-                  LOG(INFO)
-                      << "Skipping sendKeyEvent since music is already playing";
-                  return;
-                }
+              }
+              if (s.state == PlayState::PLAYING) {
+                LOG(INFO)
+                    << "Drop play key since music playing";
+                return;
               }
 
-              d->media_interface_->SendKeyEvent(0x44, KeyState::PUSHED);
+              d->media_interface_->SendKeyEvent(0x44, ks);
             },
-            weak_ptr_factory_.GetWeakPtr()));
+            weak_ptr_factory_.GetWeakPtr(), pass_through_packet->GetKeyState()));
         return;
       }
+
+/** M: Carkit can't stop when fast_forward/rewind @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      if (interop_mtk_match_addr(INTEROP_MTK_AVRCP_FASTFORWARD_REWIND_STATUS, &address_)) {
+        if (pass_through_packet->GetKeyState() == KeyState::PUSHED) {
+          if (pass_through_packet->GetOperationId() == 0x49) {
+            fast_forward_rewind_status_ = PlayState::FWD_SEEK;
+            SendFastForwardRewindStatus(false, PlayState::FWD_SEEK);
+          } else if(pass_through_packet->GetOperationId() == 0x48) {
+            fast_forward_rewind_status_ = PlayState::REV_SEEK;
+            SendFastForwardRewindStatus(false, PlayState::REV_SEEK);
+          }
+        } else if (pass_through_packet->GetOperationId() == 0x49 ||
+                   pass_through_packet->GetOperationId() == 0x48) {
+          fast_forward_rewind_status_ = PlayState::ERROR;
+          SendFastForwardRewindStatus(false, last_play_status_.state);
+        }
+      }
+#endif
+/** @} */
 
       if (IsActive()) {
         media_interface_->SendKeyEvent(pass_through_packet->GetOperationId(),
@@ -905,7 +1175,7 @@ void Device::HandleChangePath(uint8_t label,
     DEVICE_VLOG(2) << "Pushing Path to stack: \"" << CurrentFolder() << "\"";
   } else {
     // Don't pop the root id off the stack
-    if (current_path_.size() > 1) {
+    if (current_path_.size() > 0) {
       current_path_.pop();
     } else {
       DEVICE_LOG(ERROR) << "Trying to change directory up past root.";
@@ -930,6 +1200,8 @@ void Device::ChangePathResponse(uint8_t label,
                                 std::vector<ListItem> list) {
   // TODO (apanicke): Reconstruct the VFS ID's here. Right now it gets
   // reconstructed in GetFolderItemsVFS
+  // save number of items for set browser rsp
+  num_items_in_br_folder_ = list.size();
   auto builder =
       ChangePathResponseBuilder::MakeBuilder(Status::NO_ERROR, list.size());
   send_message(label, true, std::move(builder));
@@ -997,6 +1269,18 @@ void Device::GetItemAttributesNowPlayingResponse(
       info = temp;
     }
   }
+
+  /** M: Set track number and total tack number to 1 @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if (interop_mtk_match_addr(
+        INTEROP_MTK_AVRCP_FORCE_TRACK_NUMBER_TO_ONE, &address_)) {
+    info.attributes.erase(Attribute::TRACK_NUMBER);
+    info.attributes.insert(AttributeEntry(Attribute::TRACK_NUMBER, std::string("1")));
+    info.attributes.erase(Attribute::TOTAL_NUMBER_OF_TRACKS);
+    info.attributes.insert(AttributeEntry(Attribute::TOTAL_NUMBER_OF_TRACKS, std::string("1")));
+  }
+#endif
+  /** @} */
 
   auto attributes_requested = pkt->GetAttributesRequested();
   if (attributes_requested.size() != 0) {
@@ -1085,6 +1369,9 @@ void Device::GetMediaPlayerListResponse(
     auto no_items_rsp = GetFolderItemsResponseBuilder::MakePlayerListBuilder(
         Status::RANGE_OUT_OF_BOUNDS, 0x0000, browse_mtu_);
     send_message(label, true, std::move(no_items_rsp));
+    /** M: players null, sent rsp, should return @{ */
+    return;
+    /** @} */
   }
 
   auto builder = GetFolderItemsResponseBuilder::MakePlayerListBuilder(
@@ -1157,7 +1444,15 @@ void Device::GetVFSListResponse(uint8_t label,
       // right now we always use folders of mixed type
       FolderItem folder_item(vfs_ids_.get_uid(folder.media_id), 0x00,
                              folder.is_playable, folder.name);
-      if (!builder->AddFolder(folder_item)) break;
+      auto can_break = !builder->AddFolder(folder_item);
+      /** M: Save current folder name for set browse player rsp @{ */
+      if (i == pkt->GetStartItem()) {
+        mFolderName_[current_path_.size()] = folder.name;
+        DEVICE_VLOG(2) << __func__ << "current_path_.size() = " << current_path_.size()
+                 << "current folder.name = " << folder.name;
+      }
+      /** @} */
+      if (can_break) break;
     } else if (items[i].type == ListItem::SONG) {
       auto song = items[i].song;
       auto title =
@@ -1226,8 +1521,8 @@ void Device::HandleSetBrowsedPlayer(
     send_message(label, true, std::move(response));
     return;
   }
-
   DEVICE_VLOG(2) << __func__ << ": player_id=" << pkt->GetPlayerId();
+
   media_interface_->SetBrowsedPlayer(
       pkt->GetPlayerId(),
       base::Bind(&Device::SetBrowsedPlayerResponse,
@@ -1248,13 +1543,26 @@ void Device::SetBrowsedPlayerResponse(
   }
 
   curr_browsed_player_id_ = pkt->GetPlayerId();
+  DEVICE_VLOG(2) << " curr_browsed_player_id_ = " << curr_browsed_player_id_;
 
-  // Clear the path and push the new root.
-  current_path_ = std::stack<std::string>();
-  current_path_.push(root_id);
+  /** M: Send setBrowsedPlayer rsp with folder depth and items. @{ */
+  if (num_items_in_br_folder_ > 0)
+    num_items = num_items_in_br_folder_;
+
+  std::size_t folder_depth = current_path_.size();
+
+  std::string folder_name;
+  for (std::size_t i = 0; i < folder_depth; i ++ ) {
+    folder_name.append(mFolderName_[i]);
+    folder_name.append("/");
+  }
+
+  DEVICE_VLOG(2) << " num_items = " << num_items << " folder depth = " << folder_depth
+                 << " browse rsp folder_name = " << folder_name;
+  /** @} */
 
   auto response = SetBrowsedPlayerResponseBuilder::MakeBuilder(
-      Status::NO_ERROR, 0x0000, num_items, 0, "");
+      Status::NO_ERROR, 0x0000, num_items, folder_depth, folder_name);
   send_message(label, true, std::move(response));
 }
 
@@ -1443,6 +1751,24 @@ std::ostream& operator<<(std::ostream& out, const Device& d) {
       << std::endl;
   // TODO (apanicke): Add supported features as well as media keys
   return out;
+}
+
+void Device::SendFastForwardRewindStatus(bool interim, PlayState state) {
+  if (!play_status_changed_.first) {
+    DEVICE_VLOG(0) << __func__ << ": Device not registered for update";
+    return;
+  }
+  uint8_t label = play_status_changed_.second;
+
+  //last_play_status_.state = state;
+
+  auto response =
+      RegisterNotificationResponseBuilder::MakePlaybackStatusBuilder(
+          interim, state);
+  send_message_cb_.Run(label, false, std::move(response));
+
+  active_labels_.erase(label);
+  play_status_changed_ = Notification(false, 0);
 }
 
 }  // namespace avrcp

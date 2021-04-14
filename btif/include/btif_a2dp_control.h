@@ -22,6 +22,10 @@
 
 #include "audio_a2dp_hw/include/audio_a2dp_hw.h"
 
+/** M: Used for Helper function for delay a2dp start. @{ */
+#include "uipc.h"
+/** @} */
+
 // Initialize the A2DP control module. It should be called during the
 // startup stage of A2DP streaming.
 void btif_a2dp_control_init(void);
@@ -46,5 +50,9 @@ void btif_a2dp_control_set_audio_delay(uint16_t delay);
 // Reset the remote audio device's delay value and reset the counter that keeps
 // track of the number of audio bytes sent
 void btif_a2dp_control_reset_audio_delay(void);
+
+/** M: Helper function for delay a2dp start. @{ */
+void btif_av_uipc_open_wrapper(tUIPC_CH_ID ch_id, tUIPC_RCV_CBACK* p_cback);
+/** @} */
 
 #endif /* BTIF_A2DP_CONTROL_H */

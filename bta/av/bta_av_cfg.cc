@@ -74,9 +74,15 @@ const uint16_t bta_av_audio_flush_to[] = {
 /* Note: if AVRC_SUPF_TG_GROUP_NAVI is set, bta_av_cfg.avrc_group should be true
  */
 #ifndef BTA_AV_RC_SUPF_TG
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+#define BTA_AV_RC_SUPF_TG                          \
+  (AVRC_SUPF_TG_CAT1 | AVRC_SUPF_TG_MULTI_PLAYER | \
+   AVRC_SUPF_TG_BROWSE | AVRC_SUPF_TG_APP_SETTINGS)
+#else
 #define BTA_AV_RC_SUPF_TG                          \
   (AVRC_SUPF_TG_CAT1 | AVRC_SUPF_TG_MULTI_PLAYER | \
    AVRC_SUPF_TG_BROWSE) /* TODO: | AVRC_SUPF_TG_APP_SETTINGS) */
+#endif
 #endif
 
 /*
@@ -88,6 +94,10 @@ const uint8_t bta_av_meta_caps_evt_ids[] = {
     AVRC_EVT_PLAY_POS_CHANGED,   AVRC_EVT_AVAL_PLAYERS_CHANGE,
     AVRC_EVT_ADDR_PLAYER_CHANGE, AVRC_EVT_UIDS_CHANGE,
     AVRC_EVT_NOW_PLAYING_CHANGE,
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+    AVRC_EVT_APP_SETTING_CHANGE,
+#endif
+
     /* TODO: Add support for these events
     AVRC_EVT_APP_SETTING_CHANGE,
     */
@@ -113,6 +123,9 @@ const uint8_t bta_avk_meta_caps_evt_ids[] = {
 const uint8_t bta_av_meta_caps_evt_ids_avrcp13[] = {
     AVRC_EVT_PLAY_STATUS_CHANGE, AVRC_EVT_TRACK_CHANGE,
     AVRC_EVT_PLAY_POS_CHANGED,
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+    AVRC_EVT_APP_SETTING_CHANGE,
+#endif
 };
 
 #ifndef BTA_AV_NUM_RC_EVT_IDS_AVRCP13

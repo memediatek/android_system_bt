@@ -159,6 +159,9 @@ typedef struct {
 #define SDP_STATE_CONN_SETUP 1
 #define SDP_STATE_CFG_SETUP 2
 #define SDP_STATE_CONNECTED 3
+/** M: Serialize SDP requests @{ */
+#define SDP_STATE_CONN_PEND 4
+/** @} */
   uint8_t con_state;
 
 #define SDP_FLAGS_IS_ORIG 0x01
@@ -282,6 +285,11 @@ extern uint16_t sdpu_get_attrib_entry_len(tSDP_ATTRIBUTE* p_attr);
 extern uint8_t* sdpu_build_partial_attrib_entry(uint8_t* p_out,
                                                 tSDP_ATTRIBUTE* p_attr,
                                                 uint16_t len, uint16_t* offset);
+/** M: Serialize SDP requests @{ */
+extern uint16_t sdpu_get_active_ccb_cid(RawAddress remote_bd_addr);
+extern bool sdpu_process_pend_ccb(uint16_t cid, bool use_cur_chnl);
+extern void sdpu_clear_pend_ccb(uint16_t cid);
+/** @} */
 
 /* Functions provided by sdp_db.cc
  */

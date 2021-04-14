@@ -3,7 +3,10 @@
 // ========================================================
 cc_library_shared {
     name: "libbluetooth",
-    defaults: ["fluoride_defaults"],
+    defaults: [
+        "fluoride_defaults",
+        "mtk_hcidebug_defaults",
+    ],
     header_libs: ["libbluetooth_headers"],
     export_header_lib_headers: ["libbluetooth_headers"],
     srcs: [
@@ -94,6 +97,10 @@ cc_library_shared {
         "bt_stack.conf",
         "libldacBT_enc",
         "libldacBT_abr",
+        // ifeq ($(MTK_BT_HOST_SNOOP_LOG_SUPPORT), yes)
+        "mtk_bt_stack.conf",
+        "mtk_bt_fw.conf",
+        // endif
     ],
     cflags: [
         "-DBUILDCFG",

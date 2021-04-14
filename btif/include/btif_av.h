@@ -75,9 +75,23 @@ bool btif_av_stream_ready(void);
 bool btif_av_stream_started_ready(void);
 
 /**
+ * Check whether the A2DP stream is in started state
+ */
+bool btif_av_check_started_state(void);
+
+/**
  * Check whether there is a connected peer (either Source or Sink)
  */
 bool btif_av_is_connected(void);
+
+/** M: Bug fix for Block AVRCP key if A2DP is not connected @{ */
+/**
+ * Checks if av in idle state
+ *
+ * @returns bool
+ */
+bool btif_av_is_idle(void);
+/** @} */
 
 /**
  * Get the Stream Endpoint Type of the Active peer.
@@ -194,5 +208,11 @@ bool btif_av_is_a2dp_offload_enabled(void);
  *
  */
 bool btif_av_is_peer_silenced(const RawAddress& peer_address);
-
+/**
+ * call this if audio meta data changed
+ *
+ * @param source_metadata is audio info
+ *
+ */
+void btif_av_meta_data_changed(const void* pmetadata);
 #endif /* BTIF_AV_H */

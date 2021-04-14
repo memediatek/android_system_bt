@@ -16,6 +16,9 @@
 
 #pragma once
 
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+#include "avrcp.h"
+#endif
 #include "vendor_packet.h"
 
 namespace bluetooth {
@@ -81,6 +84,11 @@ class RegisterNotificationResponseBuilder : public VendorPacketBuilder {
   static std::unique_ptr<RegisterNotificationResponseBuilder>
   MakeUidsChangedBuilder(bool interim, uint16_t uid_counter);
 
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+  static std::unique_ptr<RegisterNotificationResponseBuilder>
+  MakeAppSettingChangedBuilder(bool interim, BtrcPlayerSettings player_setting);
+#endif
+
   virtual size_t size() const override;
   virtual bool Serialize(
       const std::shared_ptr<::bluetooth::Packet>& pkt) override;
@@ -88,6 +96,9 @@ class RegisterNotificationResponseBuilder : public VendorPacketBuilder {
  protected:
   Event event_;
   uint64_t data_;
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+  BtrcPlayerSettings player_setting_;
+#endif
 
   RegisterNotificationResponseBuilder(bool interim, Event event)
       : VendorPacketBuilder(interim ? CType::INTERIM : CType::CHANGED,

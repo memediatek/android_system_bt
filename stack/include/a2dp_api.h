@@ -206,6 +206,16 @@ extern uint8_t A2DP_SetTraceLevel(uint8_t new_level);
  *****************************************************************************/
 extern uint8_t A2DP_BitsSet(uint64_t num);
 
+/** M: Bug fix for When doing A2DP close, cancel SDP if it has been started to avoid NE@{ */
+/******************************************************************************
+** Function         A2D_Get_Disc_DB
+**
+** Description      get discovery database of a2dp
+** Returns          point of discovery database
+******************************************************************************/
+extern tSDP_DISCOVERY_DB * A2D_Get_Disc_DB(void);
+/** @} */
+
 // Initializes the A2DP control block.
 void A2DP_Init(void);
 

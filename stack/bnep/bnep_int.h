@@ -174,7 +174,11 @@ typedef struct {
 
   bool profile_registered; /* true when we got our BD addr */
   uint8_t trace_level;
-
+/** M: @{Add congestion counter to record congestion status. */
+/**    if one l2cap channel for bnep is broken, */
+/**    flow control can still work fine. */
+  uint16_t congestion_cnt;
+/** @} */
 } tBNEP_CB;
 
 /* Global BNEP data

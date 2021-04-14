@@ -1120,8 +1120,16 @@ void bta_jv_l2cap_start_server(int32_t type, tBTA_SEC sec_mask,
 
 /* stops an L2CAP server */
 void bta_jv_l2cap_stop_server(uint16_t local_psm, uint32_t l2cap_socket_id) {
+  /** M: Bug Fix for ALPS03877431 */
+  APPL_TRACE_DEBUG("%s() l2cap_socket_id=%d, logcal_psm=%x", __func__,
+      l2cap_socket_id, local_psm);
   for (int i = 0; i < BTA_JV_MAX_L2C_CONN; i++) {
-    if (bta_jv_cb.l2c_cb[i].psm == local_psm) {
+    /** M: Bug Fix for ALPS03877431 */
+    // Check sockt_id too for right handle.
+    APPL_TRACE_DEBUG("%s() [%d] bta_jv_cb.l2c_cb.psm=%x, bta_jv_cb.l2c_cb.l2cap_socket_id=%x",
+      __func__, i, bta_jv_cb.l2c_cb[i].psm, bta_jv_cb.l2c_cb[i].l2cap_socket_id);
+    if (bta_jv_cb.l2c_cb[i].psm == local_psm &&
+        l2cap_socket_id > 0 && l2cap_socket_id == bta_jv_cb.l2c_cb[i].l2cap_socket_id) {
       tBTA_JV_L2C_CB* p_cb = &bta_jv_cb.l2c_cb[i];
       tBTA_JV_L2CAP_CBACK* p_cback = p_cb->p_cback;
       tBTA_JV_L2CAP_CLOSE evt_data;

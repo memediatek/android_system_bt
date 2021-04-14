@@ -268,6 +268,10 @@ typedef uint8_t tBTA_GATTC_CIF_MASK;
 typedef uint16_t tBTA_GATTC_CIF_MASK;
 #elif GATT_MAX_APPS <= 32
 typedef uint32_t tBTA_GATTC_CIF_MASK;
+/** M: Feature change for FW multi-links, 7BR+32BLE @{ */
+#elif GATT_MAX_APPS <= 64
+typedef uint64_t tBTA_GATTC_CIF_MASK;
+/** @} */
 #endif
 
 typedef struct {

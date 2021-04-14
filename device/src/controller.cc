@@ -30,6 +30,13 @@
 #include "osi/include/future.h"
 #include "stack/include/btm_ble_api.h"
 
+#if defined(MTK_STACK_CONFIG_LOG) && (MTK_STACK_CONFIG_LOG == TRUE)
+#include "fw_logger_switch.h"
+#include "mtk_stack_config.h"
+using vendor::mediatek::bluetooth::stack::FWLogSwitch;
+using vendor::mediatek::bluetooth::stack::StackConfig;
+#endif
+
 const bt_event_mask_t BLE_EVENT_MASK = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
 #if (BLE_PRIVACY_SPT == TRUE)
                                          0x1E,
@@ -98,6 +105,10 @@ static future_t* start_up(void) {
   // Send the initial reset command
   response = AWAIT_COMMAND(packet_factory->make_reset());
   packet_parser->parse_generic_command_complete(response);
+
+#if defined(MTK_STACK_CONFIG_LOG) && (MTK_STACK_CONFIG_LOG == TRUE)
+  FWLogSwitch::GetInstance()->StartUp();
+#endif
 
   // Request the classic buffer size next
   response = AWAIT_COMMAND(packet_factory->make_read_buffer_size());
@@ -280,6 +291,12 @@ static future_t* start_up(void) {
 }
 
 static future_t* shut_down(void) {
+#if defined(MTK_STACK_CONFIG_LOG) && (MTK_STACK_CONFIG_LOG == TRUE)
+  if (FWLogSwitch::GetInstance()->IsStarted()) {
+      FWLogSwitch::GetInstance()->Shutdown();
+  }
+#endif
+
   readable = false;
   return future_new_immediate(FUTURE_SUCCESS);
 }

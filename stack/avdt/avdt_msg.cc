@@ -38,6 +38,10 @@
 #include "btu.h"
 #include "osi/include/osi.h"
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+
 /*****************************************************************************
  * constants
  ****************************************************************************/
@@ -48,6 +52,9 @@
    AVDT_PSC_HDRCMP | AVDT_PSC_MUX)
 #define AVDT_PSC_PROTECT (1 << 4) /* Content Protection */
 #define AVDT_PSC_CODEC (1 << 7)   /* codec */
+
+RawAddress avdt_cmd_peer_addr;
+RawAddress avdt_rsp_peer_addr;
 
 /*****************************************************************************
  * type definitions
@@ -309,6 +316,22 @@ static void avdt_msg_bld_cfg(uint8_t** p, AvdtpSepConfig* p_cfg) {
     memcpy(*p, p_cfg->protect_info, len);
     *p += len;
   }
+
+  /** M: Add disable delay report blacklist. @{ */
+  #if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+    if (avdt_cmd_peer_addr != RawAddress::kEmpty ||
+                                                            avdt_rsp_peer_addr != RawAddress::kEmpty) {
+      AVDT_TRACE_DEBUG("%s: send cmd peer addr=%s, send rsp_peer addr=%s", __func__,
+                           avdt_cmd_peer_addr.ToString().c_str(),avdt_rsp_peer_addr.ToString().c_str());
+      if (interop_mtk_match_addr_name(INTEROP_MTK_A2DP_DISABLE_DELAY_REPORT,
+        &avdt_cmd_peer_addr) ||
+        interop_mtk_match_addr_name(INTEROP_MTK_A2DP_DISABLE_DELAY_REPORT,
+        &avdt_rsp_peer_addr)) {
+        p_cfg->psc_mask &= AVDT_LEG_PSC;
+      }
+    }
+  #endif
+  /** @} */
 
   /* delay report */
   if (p_cfg->psc_mask & AVDT_PSC_DELAY_RPT) {
@@ -1331,6 +1354,10 @@ void avdt_msg_send_cmd(AvdtpCcb* p_ccb, void* p_scb, uint8_t sig_id,
   p_buf->offset = AVDT_MSG_OFFSET;
   p_start = p = (uint8_t*)(p_buf + 1) + p_buf->offset;
 
+  /** M: Add disable delay report blacklist. @{ */
+  avdt_cmd_peer_addr = p_ccb->peer_addr;
+  /** @} */
+
   /* execute parameter building function to build message */
   (*avdt_msg_bld_cmd[sig_id - 1])(&p, p_params);
 
@@ -1386,6 +1413,10 @@ void avdt_msg_send_rsp(AvdtpCcb* p_ccb, uint8_t sig_id, tAVDT_MSG* p_params) {
   /* set up buf pointer and offset */
   p_buf->offset = AVDT_MSG_OFFSET;
   p_start = p = (uint8_t*)(p_buf + 1) + p_buf->offset;
+
+  /** M: Add disable delay report blacklist. @{ */
+  avdt_rsp_peer_addr = p_ccb->peer_addr;
+  /** @} */
 
   /* execute parameter building function to build message */
   (*avdt_msg_bld_rsp[sig_id - 1])(&p, p_params);

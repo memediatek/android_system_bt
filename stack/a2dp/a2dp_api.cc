@@ -395,3 +395,16 @@ void A2DP_Init(void) {
 }
 
 uint16_t A2DP_GetAvdtpVersion() { return a2dp_cb.avdt_sdp_ver; }
+
+/** M: Bug fix for When doing A2DP close, cancel SDP if it has been started to avoid NE@{ */
+/******************************************************************************
+** Function         A2D_Get_Disc_DB
+**
+** Description      get discovery database of a2dp
+** Returns          point of discovery database
+******************************************************************************/
+tSDP_DISCOVERY_DB * A2D_Get_Disc_DB(void) {
+  return a2dp_cb.find.p_db;
+}
+/** @} */
+

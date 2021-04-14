@@ -341,6 +341,19 @@ static void bnep_disconnect_ind(uint16_t l2cap_cid, bool ack_needed) {
 
   BNEP_TRACE_EVENT("BNEP - Rcvd L2CAP disc, CID: 0x%x", l2cap_cid);
 
+/** M: @{Add congestion counter to record congestion status. */
+/**    if one l2cap channel for bnep is broken, */
+/**    flow control can still work fine. */
+  if (p_bcb->con_flags & BNEP_FLAGS_L2CAP_CONGESTED)
+    bnep_cb.congestion_cnt -= 1;
+
+  if (bnep_cb.congestion_cnt <= 0) {
+    if (bnep_cb.p_tx_data_flow_cb) {
+      bnep_cb.p_tx_data_flow_cb(p_bcb->handle, BNEP_TX_FLOW_ON);
+    }
+  }
+/** @} */
+
   /* Tell the user if he has a callback */
   if (p_bcb->con_state == BNEP_STATE_CONNECTED) {
     if (bnep_cb.p_conn_state_cb)
@@ -390,11 +403,25 @@ static void bnep_congestion_ind(uint16_t l2cap_cid, bool is_congested) {
   }
 
   if (is_congested) {
+/** M: @{Add congestion counter to record congestion status. */
+/**    if one l2cap channel for bnep is broken, */
+/**    flow control can still work fine. */
+    if(!(p_bcb->con_flags & BNEP_FLAGS_L2CAP_CONGESTED))
+      bnep_cb.congestion_cnt += 1;
+/** @} */
+
     p_bcb->con_flags |= BNEP_FLAGS_L2CAP_CONGESTED;
     if (bnep_cb.p_tx_data_flow_cb) {
       bnep_cb.p_tx_data_flow_cb(p_bcb->handle, BNEP_TX_FLOW_OFF);
     }
   } else {
+/** M: @{Add congestion counter to record congestion status. */
+/**    if one l2cap channel for bnep is broken, */
+/**    flow control can still work fine. */
+    if(p_bcb->con_flags & BNEP_FLAGS_L2CAP_CONGESTED)
+      bnep_cb.congestion_cnt -=1;
+/** @} */
+
     p_bcb->con_flags &= ~BNEP_FLAGS_L2CAP_CONGESTED;
 
     if (bnep_cb.p_tx_data_flow_cb) {

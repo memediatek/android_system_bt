@@ -7,6 +7,7 @@ bootstrap_go_package {
         "soong",
         "soong-android",
         "soong-cc",
+        "soong-bluetooth-mediatek",
     ],
     srcs: [
         "fluoride.go",
@@ -104,4 +105,21 @@ cc_defaults {
             ],
         },
     },
+}
+
+bootstrap_go_package  {
+    name:"soong-bluetooth-mediatek",
+    pkgPath:"android/soong/bluetooth/mediatek",
+    deps:[
+        "soong-android",
+        "soong-cc",
+     ],
+    srcs:[
+        "mediatek.go",
+     ],
+    pluginFor:["soong_build"],
+}
+
+mtk_hcidebug_defaults {
+    name: "mtk_hcidebug_defaults",
 }

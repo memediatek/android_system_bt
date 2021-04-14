@@ -49,6 +49,9 @@
 #include "gattdefs.h"
 #include "l2c_int.h"
 #include "osi/include/log.h"
+/** M: update ble adv's time_of_resp @{ */
+#include "common/time_util.h"
+/** @} */
 
 #define BTM_BLE_NAME_SHORT 0x01
 #define BTM_BLE_NAME_CMPL 0x02
@@ -1278,6 +1281,9 @@ tBTM_STATUS btm_ble_start_inquiry(uint8_t mode, uint8_t duration) {
   }
 
   if (!BTM_BLE_IS_SCAN_ACTIVE(p_ble_cb->scan_activity)) {
+    /** M: record correct scan type @{ */
+    p_ble_cb->inq_var.scan_type = BTM_BLE_SCAN_MODE_ACTI;
+    /** @} */
     btm_send_hci_set_scan_params(
         BTM_BLE_SCAN_MODE_ACTI, BTM_BLE_LOW_LATENCY_SCAN_INT,
         BTM_BLE_LOW_LATENCY_SCAN_WIN,
@@ -1930,6 +1936,19 @@ static void btm_ble_process_adv_pkt_cont(
       is_start ? cache.Set(addr_type, bda, std::move(tmp))
                : cache.Append(addr_type, bda, std::move(tmp));
 
+  /**M:fix bug:ALPS04893824: discarding bad advertisement packet @{*/
+  /* From Core Spec Version 5.0, Vol 2, Part E, 7.7.65.13
+   * Event_Type, Data status: 0x02 = 10b = Incomplete, data truncated, no more to come
+   * this bad advertisement packet is truncated, discarding it */
+  if (ble_evt_type_data_status(evt_type) == 0x02) {
+    cache.Clear(addr_type, bda);
+    LOG_WARN(LOG_TAG,
+           "%s bad advertisement packet is truncated, discarding this packet",
+           __func__);
+    return;
+  }
+  /**@}*/
+
   bool data_complete = (ble_evt_type_data_status(evt_type) != 0x01);
 
   if (!data_complete) {
@@ -1981,6 +2000,9 @@ static void btm_ble_process_adv_pkt_cont(
   {
     p_inq->inq_cmpl_info.num_resp++;
   }
+  /** M: update ble adv's time_of_resp @{ */
+  p_i->time_of_resp = bluetooth::common::time_get_os_boottime_ms();
+  /** @} */
 
   /* update the LE device information in inquiry database */
   btm_ble_update_inq_result(p_i, addr_type, bda, evt_type, primary_phy,
@@ -2336,7 +2358,13 @@ void btm_ble_read_remote_features_complete(uint8_t* p) {
   if (status != HCI_SUCCESS) {
     BTM_TRACE_ERROR("%s: failed for handle: 0x%04d, status 0x%02x", __func__,
                     handle, status);
-    if (status != HCI_ERR_UNSUPPORTED_REM_FEATURE) return;
+
+    /** M: Bug fix. Disconnect the link directly. Or it'll become a zombie link@{ */
+    if (status != HCI_ERR_UNSUPPORTED_REM_FEATURE) {
+      btsnd_hcic_disconnect(handle, HCI_ERR_PEER_USER);
+      return;
+    }
+    /** @} */
   }
 
   int idx = btm_handle_to_acl_index(handle);

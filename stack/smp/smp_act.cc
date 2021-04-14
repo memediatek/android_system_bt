@@ -29,6 +29,10 @@
 #include "stack/smp/smp_int.h"
 #include "utils/include/bt_utils.h"
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+
 #define SMP_KEY_DIST_TYPE_MAX 4
 
 const tSMP_ACT smp_distribute_act[] = {
@@ -177,6 +181,10 @@ void smp_send_app_cback(tSMP_CB* p_cb, tSMP_INT_DATA* p_data) {
           if (!p_cb->secure_connections_only_mode_required &&
               (!(p_cb->loc_auth_req & SMP_SC_SUPPORT_BIT) ||
                lmp_version_below(p_cb->pairing_bda, HCI_PROTO_VERSION_4_2) ||
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+               interop_mtk_match_addr(INTEROP_MTK_DISABLE_LE_SECURE_CONNECTIONS,
+                                      &p_cb->pairing_bda) ||
+#endif
                interop_match_addr(INTEROP_DISABLE_LE_SECURE_CONNECTIONS,
                                   (const RawAddress*)&p_cb->pairing_bda))) {
             p_cb->loc_auth_req &= ~SMP_SC_SUPPORT_BIT;

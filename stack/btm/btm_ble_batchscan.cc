@@ -99,6 +99,9 @@ void btm_ble_batchscan_filter_track_adv_vse_cback(uint8_t len, uint8_t* p) {
           adv_data.p_adv_pkt_data =
               static_cast<uint8_t*>(osi_malloc(adv_data.adv_pkt_len));
           memcpy(adv_data.p_adv_pkt_data, p, adv_data.adv_pkt_len);
+          /**M: shift data to read next block @{*/
+          p += adv_data.adv_pkt_len;
+          /**@} */
         }
 
         STREAM_TO_UINT8(adv_data.scan_rsp_len, p);
@@ -106,6 +109,9 @@ void btm_ble_batchscan_filter_track_adv_vse_cback(uint8_t len, uint8_t* p) {
           adv_data.p_scan_rsp_data =
               static_cast<uint8_t*>(osi_malloc(adv_data.scan_rsp_len));
           memcpy(adv_data.p_scan_rsp_data, p, adv_data.scan_rsp_len);
+          /**M: shift data to read next block @{*/
+          p += adv_data.scan_rsp_len;
+          /**@} */
         }
       }
     } else {

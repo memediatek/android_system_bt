@@ -41,6 +41,9 @@
 
 #include "sdp_api.h"
 #include "sdpint.h"
+/** M: Serialize SDP requests @{ */
+#include "mediatek/stack/include/mtk_sdp.h"
+/** @} */
 
 /******************************************************************************/
 /*                     G L O B A L      S D P       D A T A                   */
@@ -279,6 +282,9 @@ static void sdp_connect_cfm(uint16_t l2cap_cid, uint16_t result) {
       else if (p_ccb->p_cb2)
         (*p_ccb->p_cb2)(err, p_ccb->user_data);
     }
+    /** M: Serialize SDP requests @{ */
+    sdpu_process_pend_ccb(p_ccb->connection_id, false);
+    /** @} */
     sdpu_release_ccb(p_ccb);
   }
 }
@@ -451,16 +457,31 @@ static void sdp_disconnect_ind(uint16_t l2cap_cid, bool ack_needed) {
 
   SDP_TRACE_EVENT("SDP - Rcvd L2CAP disc, CID: 0x%x", l2cap_cid);
   /* Tell the user if he has a callback */
-  if (p_ccb->p_cb)
-    (*p_ccb->p_cb)((uint16_t)((p_ccb->con_state == SDP_STATE_CONNECTED)
-                                  ? SDP_SUCCESS
-                                  : SDP_CONN_FAILED));
+  if (p_ccb->p_cb) {
+    /** M: fix unexcepted change of pairng addr @{ */
+    if ((p_ccb->con_state == SDP_STATE_CONNECTED) &&
+       (p_ccb->disc_state != SDP_DISC_WAIT_SEARCH_ATTR) &&
+       (p_ccb->disc_state != SDP_DISC_WAIT_HANDLES))
+      (*p_ccb->p_cb) ((uint16_t) SDP_SUCCESS);
+    else
+      (*p_ccb->p_cb) ((uint16_t) SDP_CONN_FAILED);
+    /** @} */
+  }
   else if (p_ccb->p_cb2)
     (*p_ccb->p_cb2)(
         (uint16_t)((p_ccb->con_state == SDP_STATE_CONNECTED) ? SDP_SUCCESS
                                                              : SDP_CONN_FAILED),
         p_ccb->user_data);
 
+  /** M: Serialize SDP requests @{ */
+  if (ack_needed) {
+    SDP_TRACE_WARNING ("SDP - Rcvd L2CAP disc, process pend sdp ccb: 0x%x", l2cap_cid);
+    sdpu_process_pend_ccb(p_ccb->connection_id, false);
+  } else {
+    SDP_TRACE_WARNING ("SDP - Rcvd L2CAP disc, ACL disc clear pend sdp ccb: 0x%x", l2cap_cid);
+    sdpu_clear_pend_ccb(p_ccb->connection_id);
+  }
+  /** @} */
   sdpu_release_ccb(p_ccb);
 }
 
@@ -527,6 +548,9 @@ tCONN_CB* sdp_conn_originate(const RawAddress& p_bd_addr) {
   SDP_TRACE_EVENT("%s: SDP - Originate started for peer %s", __func__,
                   p_bd_addr.ToString().c_str());
 
+  /** M: Serialize SDP requests @{ */
+  cid = sdpu_get_active_ccb_cid (p_bd_addr);
+  /** @} */
   /* We are the originator of this connection */
   p_ccb->con_flags |= SDP_FLAGS_IS_ORIG;
 
@@ -535,10 +559,15 @@ tCONN_CB* sdp_conn_originate(const RawAddress& p_bd_addr) {
 
   /* Transition to the next appropriate state, waiting for connection confirm.
    */
-  p_ccb->con_state = SDP_STATE_CONN_SETUP;
-
-  cid = L2CA_ConnectReq(SDP_PSM, p_bd_addr);
-
+  /** M: Serialize SDP requests @{ */
+  if (!cid) {
+    p_ccb->con_state = SDP_STATE_CONN_SETUP;
+    cid = L2CA_ConnectReq (SDP_PSM, p_bd_addr);
+  } else {
+    p_ccb->con_state = SDP_STATE_CONN_PEND;
+    SDP_TRACE_WARNING ("one SDP - active on cid = %0x ", cid);
+  }
+  /** @} */
   /* Check if L2CAP started the connection process */
   if (cid == 0) {
     SDP_TRACE_WARNING("%s: SDP - Originate failed for peer %s", __func__,
@@ -603,8 +632,46 @@ void sdp_disconnect(tCONN_CB* p_ccb, uint16_t reason) {
 
   /* Check if we have a connection ID */
   if (p_ccb->connection_id != 0) {
-    L2CA_DisconnectReq(p_ccb->connection_id);
     p_ccb->disconnect_reason = reason;
+    /** M: Serialize SDP requests @{ */
+    if (SDP_SUCCESS == p_ccb->disconnect_reason &&
+       (true == sdpu_process_pend_ccb(p_ccb->connection_id, true))) {
+      /* Tell the user if he has a callback */
+      if (p_ccb->p_cb)
+        (*p_ccb->p_cb)(p_ccb->disconnect_reason);
+      else if (p_ccb->p_cb2)
+        (*p_ccb->p_cb2)(p_ccb->disconnect_reason, p_ccb->user_data);
+      sdpu_release_ccb(p_ccb);
+      return;
+    } else if (SDP_CANCEL == p_ccb->disconnect_reason &&
+       (p_ccb->con_state == SDP_STATE_CONN_SETUP)) {
+      SDP_TRACE_EVENT("SDP - disconnect link not up or remote sdp conn rsp pending CID: 0x%x", p_ccb->connection_id);
+
+      L2CA_DisconnectReq (p_ccb->connection_id);
+      sdpu_process_pend_ccb(p_ccb->connection_id, false);
+
+      /* Tell the user if he has a callback */
+      if (p_ccb->p_cb)
+        (*p_ccb->p_cb)(p_ccb->disconnect_reason);
+      else if (p_ccb->p_cb2)
+        (*p_ccb->p_cb2)(p_ccb->disconnect_reason, p_ccb->user_data);
+      sdpu_release_ccb(p_ccb);
+      return;
+
+    } else if (SDP_CANCEL == p_ccb->disconnect_reason &&
+       (p_ccb->con_state == SDP_STATE_CONN_PEND)) {
+      SDP_TRACE_EVENT("SDP - disconnect sdp cancel in pending state CID: 0x%x", p_ccb->connection_id);
+
+      /* Tell the user if he has a callback */
+      if (p_ccb->p_cb)
+        (*p_ccb->p_cb)(p_ccb->disconnect_reason);
+      else if (p_ccb->p_cb2)
+        (*p_ccb->p_cb2)(p_ccb->disconnect_reason, p_ccb->user_data);
+      sdpu_release_ccb(p_ccb);
+    } else {
+      L2CA_DisconnectReq (p_ccb->connection_id);
+    }
+    /** @} */
   }
 
   /* If at setup state, we may not get callback ind from L2CAP */
@@ -649,6 +716,9 @@ static void sdp_disconnect_cfm(uint16_t l2cap_cid,
   else if (p_ccb->p_cb2)
     (*p_ccb->p_cb2)(p_ccb->disconnect_reason, p_ccb->user_data);
 
+  /** M: Serialize SDP requests @{ */
+  sdpu_process_pend_ccb(p_ccb->connection_id, false);
+  /** @} */
   sdpu_release_ccb(p_ccb);
 }
 
@@ -675,5 +745,8 @@ void sdp_conn_timer_timeout(void* data) {
     (*p_ccb->p_cb)(SDP_CONN_FAILED);
   else if (p_ccb->p_cb2)
     (*p_ccb->p_cb2)(SDP_CONN_FAILED, p_ccb->user_data);
+  /** M: Serialize SDP requests @{ */
+  sdpu_clear_pend_ccb(p_ccb->connection_id);
+  /** @} */
   sdpu_release_ccb(p_ccb);
 }

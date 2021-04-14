@@ -365,13 +365,15 @@ bool bta_ag_sdp_find_attr(tBTA_AG_SCB* p_scb, tBTA_SERVICE_MASK service) {
         /* Do not update if we already received BRSF.           */
         uint16_t sdp_features = p_attr->attr_value.v.u16;
         bool sdp_wbs_support = sdp_features & BTA_AG_FEAT_WBS_SUPPORT;
-        if (!p_scb->received_at_bac && sdp_wbs_support) {
+        if (!p_scb->received_at_bac && sdp_wbs_support &&
+            (p_scb->peer_features == 0 ||
+             p_scb->peer_features & BTA_AG_PEER_FEAT_CODEC)) {
           // Workaround for misbehaving HFs (e.g. some Hyundai car kit) that:
           // 1. Indicate WBS support in SDP and codec negotiation in BRSF
           // 2. But do not send required AT+BAC command
           // Will assume mSBC is enabled and try codec negotiation by default
           p_scb->codec_updated = true;
-          p_scb->peer_codecs = BTA_AG_CODEC_CVSD & BTA_AG_CODEC_MSBC;
+          p_scb->peer_codecs = BTA_AG_CODEC_CVSD | BTA_AG_CODEC_MSBC;
           p_scb->sco_codec = UUID_CODEC_MSBC;
         }
         if (sdp_features != p_scb->peer_sdp_features) {
@@ -510,5 +512,11 @@ void bta_ag_do_disc(tBTA_AG_SCB* p_scb, tBTA_SERVICE_MASK service) {
  *
  ******************************************************************************/
 void bta_ag_free_db(tBTA_AG_SCB* p_scb, const tBTA_AG_DATA& data) {
+    if (p_scb && p_scb->p_disc_db)
+    {
+        /** M: We need to cancel sdp before free db @{ */
+        (void)SDP_CancelServiceSearch (p_scb->p_disc_db);
+        /** @} */
   osi_free_and_reset((void**)&p_scb->p_disc_db);
+    }
 }

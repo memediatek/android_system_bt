@@ -26,6 +26,7 @@ cc_library_static {
     ],
 }
 
+/*
 cc_test {
     name: "net_test_avrcp",
     test_suites: ["general-tests"],
@@ -62,3 +63,4 @@ cc_test {
 
     cflags: ["-DBUILDCFG"],
 }
+*/

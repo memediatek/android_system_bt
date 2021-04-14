@@ -72,6 +72,11 @@ static void background_connection_add(uint8_t addr_type,
         BackgroundConnection{address, addr_type, false, 0, false};
   } else {
     BackgroundConnection* connection = &map_iter->second;
+    /**M: check already existed addr_type is match or not @{*/
+    if ( connection->addr_type !=  addr_type ){
+        BTM_TRACE_EVENT("%s addr-type not match ! %d %d", __func__, connection->addr_type, addr_type);
+    }
+    /**@} */
     connection->addr_type = addr_type;
     connection->pending_removal = false;
   }
@@ -252,6 +257,24 @@ void wl_remove_complete(uint8_t* p_data, uint16_t /* evt_len */) {
   VLOG(2) << __func__ << ": status=" << loghex(status);
 }
 
+void btm_execute_wl_dev_operation_pending_remove(void) {
+  /**M: remove pending_remove devices @{*/
+  VLOG(1) << __func__ ;
+  for (auto map_it = background_connections.begin();
+       map_it != background_connections.end();) {
+    BackgroundConnection* connection = &map_it->second;
+    if (connection->pending_removal) {
+      btsnd_hcic_ble_remove_from_white_list(
+          connection->addr_type_in_wl, connection->address,
+          base::BindOnce(&wl_remove_complete));
+      map_it = background_connections.erase(map_it);
+    } else{
+      ++map_it;
+    }
+  }
+  /**@} */
+}
+
 /*******************************************************************************
  *
  * Function         btm_execute_wl_dev_operation
@@ -355,6 +378,15 @@ bool btm_ble_start_auto_conn() {
     LOG(INFO) << "initate background connection fail, topology limitation";
     return false;
   }
+  /**M: force to remove remove-pending devices @{*/
+  BTM_TRACE_DEBUG("%s conn_st = %d connections_pending = %d l2cu-lcb = %d", __func__, btm_ble_get_conn_st(), background_connections_pending() , l2cu_can_allocate_lcb());
+
+  if (btm_ble_get_conn_st() != BLE_CONN_IDLE ){
+    BTM_TRACE_DEBUG("%s not idle ignore", __func__);
+    return false;
+  }
+  btm_execute_wl_dev_operation_pending_remove();
+  /**@} */
 
   if (btm_ble_get_conn_st() != BLE_CONN_IDLE ||
       !background_connections_pending() || !l2cu_can_allocate_lcb()) {

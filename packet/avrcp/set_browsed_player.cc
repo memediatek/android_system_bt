@@ -69,12 +69,23 @@ bool SetBrowsedPlayerResponseBuilder::Serialize(
 
   // Skip adding the folder name if the folder depth is 0
   if (folder_depth_ == 0) return true;
-  uint16_t folder_name_len = folder_name_.size();
-  AddPayloadOctets2(pkt, base::ByteSwap(folder_name_len));
-  for (auto it = folder_name_.begin(); it != folder_name_.end(); it++) {
-    AddPayloadOctets1(pkt, *it);
-  }
 
+  /** M: Serialize for setBrowsedPlayer rsp with folder depth and items @{ */
+  std::string sub_folder_name = "";
+  uint16_t folder_name_len = 0;
+  for (auto it = folder_name_.begin(); it != folder_name_.end(); it++) {
+    if(*it != '/') {
+      sub_folder_name += *it;
+    } else {
+      folder_name_len = sub_folder_name.size();
+      AddPayloadOctets2(pkt, base::ByteSwap(folder_name_len));
+      for (auto i = sub_folder_name.begin(); i != sub_folder_name.end(); i++) {
+        AddPayloadOctets1(pkt, *i);
+      }
+      sub_folder_name = "";
+    }
+  }
+  /** @} */
   return true;
 }
 

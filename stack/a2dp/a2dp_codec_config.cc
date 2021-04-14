@@ -106,7 +106,9 @@ void A2dpCodecConfig::setDefaultCodecPriority() {
 A2dpCodecConfig* A2dpCodecConfig::createCodec(
     btav_a2dp_codec_index_t codec_index,
     btav_a2dp_codec_priority_t codec_priority) {
-  LOG_DEBUG(LOG_TAG, "%s: codec %s", __func__, A2DP_CodecIndexStr(codec_index));
+  /** M: Remove useless log @{ */
+//LOG_DEBUG(LOG_TAG, "%s: codec %s", __func__, A2DP_CodecIndexStr(codec_index));
+  /** @} */
 
   A2dpCodecConfig* codec_config = nullptr;
   switch (codec_index) {

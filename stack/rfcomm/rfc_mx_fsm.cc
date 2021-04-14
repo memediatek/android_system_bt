@@ -34,6 +34,13 @@
 #include "rfc_int.h"
 #include "rfcdefs.h"
 
+/** M: Bug Fix For rfcomm connection establishment @{ */
+// Some legacy devices need user input pin code which take a few seconds.
+// It will lead to disconnection when expire the timer that started in PORT_StartCnf.
+// Do not start timer for these devices.
+#include "btm_int.h"
+/** @} */
+
 #define L2CAP_SUCCESS 0
 #define L2CAP_ERROR 1
 
@@ -409,7 +416,19 @@ void rfc_mx_sm_state_wait_sabme(tRFC_MCB* p_mcb, uint16_t event, void* p_data) {
 
         p_mcb->state = RFC_MX_STATE_CONNECTED;
         p_mcb->peer_ready = true;
-        PORT_StartCnf(p_mcb, RFCOMM_SUCCESS);
+        /** M: Bug Fix For rfcomm connection establishment @{ */
+        // Some legacy devices need user input pin code which take a few seconds.
+        // It will lead to disconnection when expire the timer that started in PORT_StartCnf.
+        // Do not start timer for these devices.
+        tBTM_SEC_DEV_REC *p_dev_rec;
+        p_dev_rec = btm_find_dev(p_mcb->bd_addr);
+        if (p_dev_rec && !BTM_SEC_IS_SM4(p_dev_rec->sm4)) {
+          RFCOMM_TRACE_EVENT ("Do not start timer for devices that not support sm4");
+          return;
+        }
+        else
+        /** @} */
+          PORT_StartCnf(p_mcb, RFCOMM_SUCCESS);
       }
       return;
 

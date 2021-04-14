@@ -117,6 +117,9 @@ void reactor_free(reactor_t* reactor) {
   list_free(reactor->invalidation_list);
   close(reactor->event_fd);
   close(reactor->epoll_fd);
+  /** M: Fix un-reference Memoryleakage @{ */
+  delete reactor->list_mutex;
+  /** @} */
   osi_free(reactor);
 }
 

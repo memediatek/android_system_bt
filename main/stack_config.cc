@@ -25,6 +25,11 @@
 #include "osi/include/future.h"
 #include "osi/include/log.h"
 
+#if defined(MTK_STACK_CONFIG_LOG) && (MTK_STACK_CONFIG_LOG == TRUE)
+#include "mediatek/include/mtk_stack_config.h"
+using vendor::mediatek::bluetooth::stack::StackConfig;
+#endif
+
 namespace {
 const char* TRACE_CONFIG_ENABLED_KEY = "TraceConf";
 const char* PTS_AVRCP_TEST = "PTS_AvrcpTest";
@@ -55,6 +60,12 @@ static future_t* init() {
     LOG_INFO(LOG_TAG, "%s file >%s< not found", __func__, path);
     config = config_new_empty();
   }
+
+#if defined(MTK_STACK_CONFIG_LOG) && (MTK_STACK_CONFIG_LOG == TRUE)
+  if (StackConfig::GetInstance()->IsNeedOverWriteConfig()) {
+    config = StackConfig::GetInstance()->OverwriteConfig(std::move(config));
+  }
+#endif
 
   return future_new_immediate(FUTURE_SUCCESS);
 }

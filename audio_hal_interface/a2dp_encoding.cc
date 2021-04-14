@@ -27,6 +27,16 @@
 #include "btif_hf.h"
 #include "osi/include/properties.h"
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/mtk_btif_av.h"
+#endif
+
+/** M: add protect for BtifAvSource::peers_ . @{ */
+extern std::mutex btifavsource_peer_lock_;
+/** @} */
+
+extern bool is_restart_session;
+
 namespace {
 
 using ::android::hardware::bluetooth::audio::V2_0::AacObjectType;
@@ -82,10 +92,25 @@ class A2dpTransport : public ::bluetooth::audio::IBluetoothTransportInstance {
       return a2dp_ack_to_bt_audio_ctrl_ack(A2DP_CTRL_ACK_INCALL_FAILURE);
     }
 
-    if (btif_a2dp_source_is_streaming()) {
-      LOG(ERROR) << __func__ << ": source is busy streaming";
+    if (btif_a2dp_source_is_streaming() || is_restart_session) {
+      LOG(ERROR) << __func__ << ": source is busy streaming, is_restart_session=" << logbool(is_restart_session);
       return a2dp_ack_to_bt_audio_ctrl_ack(A2DP_CTRL_ACK_FAILURE);
     }
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+    /***
+    * Check the remote device. If it special device, will
+    * break this loop and delay for 1s. After 1s, it will call
+    * btif_media_av_delay_start_cmd_hdlr to go on.
+    */
+    BtAvServiceDelayTimer delay_timer;
+    BtAvServiceDelayTimer::btif_a2dp_data_init(NULL);
+    if (delay_timer.btif_av_is_black_peer_for_delay_start(btif_av_source_active_peer())) {
+      APPL_TRACE_EVENT("Break and delay 1s for START cmd");
+      a2dp_pending_cmd_ = A2DP_CTRL_CMD_START;
+      return a2dp_ack_to_bt_audio_ctrl_ack(A2DP_CTRL_ACK_PENDING);
+    }
+#endif
 
     if (btif_av_stream_ready()) {
       /*
@@ -136,13 +161,23 @@ class A2dpTransport : public ::bluetooth::audio::IBluetoothTransportInstance {
   }
 
   void StopRequest() override {
+    // CleanupAllPeers() erase the peers maybe cause
+    // NE during accessing the peers.
+    LOG(INFO) << __func__ << ": acquire the lock.";
+    std::lock_guard<std::mutex> lock(btifavsource_peer_lock_);
     if (btif_av_get_peer_sep() == AVDT_TSEP_SNK &&
         !btif_a2dp_source_is_streaming()) {
+      LOG(INFO) << __func__ << ": release the lock.";
       return;
     }
     LOG(INFO) << __func__ << ": handling";
-    a2dp_pending_cmd_ = A2DP_CTRL_CMD_STOP;
+    /** M: Don't set stop pending cmd if we are not in started state @{ */
+    if (btif_av_check_started_state()){
+      a2dp_pending_cmd_ = A2DP_CTRL_CMD_STOP;
+    }
+    /** @} */
     btif_av_stream_stop(RawAddress::kEmpty);
+    LOG(INFO) << __func__ << ": release the lock.";
   }
 
   bool GetPresentationPosition(uint64_t* remote_delay_report_ns,
@@ -169,6 +204,8 @@ class A2dpTransport : public ::bluetooth::audio::IBluetoothTransportInstance {
       --track_count;
       ++tracks;
     }
+    //tell avrcp
+    btif_av_meta_data_changed(&source_metadata);
   }
 
   tA2DP_CTRL_CMD GetPendingCmd() const { return a2dp_pending_cmd_; }

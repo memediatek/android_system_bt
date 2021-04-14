@@ -33,6 +33,10 @@
 #include "bdroid_buildcfg.h"
 #endif
 
+#ifdef HAS_MDROID_BUILDCFG
+#include "mdroid_buildcfg.h"
+#endif
+
 #include "bt_types.h" /* This must be defined AFTER buildcfg.h */
 
 //------------------Added from bdroid_buildcfg.h---------------------

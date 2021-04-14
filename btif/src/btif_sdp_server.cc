@@ -44,6 +44,7 @@
 #include "btif_sock_util.h"
 #include "btif_util.h"
 #include "osi/include/allocator.h"
+#include "mediatek/include/mtk_sdp_pbap.h"
 #include "utl.h"
 
 // Protects the sdp_slots array from concurrent access.
@@ -265,6 +266,10 @@ static const sdp_slot_t* start_create_sdp(int id) {
   return &(sdp_slots[id]);
 }
 
+int get_sdp_handle(int id) {
+  return id >= 0 ? sdp_slots[id].sdp_handle  : -1;
+}
+
 static void set_sdp_handle(int id, int handle) {
   std::unique_lock<std::recursive_mutex> lock(sdp_lock);
   sdp_slots[id].sdp_handle = handle;
@@ -283,7 +288,12 @@ bt_status_t create_sdp_record(bluetooth_sdp_record* record,
   BTA_SdpCreateRecordByUser(INT_TO_PTR(handle));
 
   *record_handle = handle;
-
+  //* M: create pbap version 1.1 for daynamic adjust. @{ */
+  if (record->hdr.type == SDP_TYPE_PBAP_PSE &&
+      record->hdr.profile_version == 0x0102) {
+    mtk_create_sdp_recored_v11();
+  }
+  //* @} */
   return BT_STATUS_SUCCESS;
 }
 
@@ -348,6 +358,8 @@ void on_create_record_event(int id) {
     }
     if (handle != -1) {
       set_sdp_handle(id, handle);
+      if (record->hdr.type == SDP_TYPE_PBAP_PSE)
+        mtk_save_pbap_handle(id,record->hdr.profile_version == 0x0101);
     }
   }
 }

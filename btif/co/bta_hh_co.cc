@@ -127,9 +127,32 @@ static int uhid_read_event(btif_hh_device_t* p_dev) {
       if (ev.u.output.rtype == UHID_FEATURE_REPORT)
         btif_hh_setreport(p_dev, BTHH_FEATURE_REPORT, ev.u.output.size,
                           ev.u.output.data);
-      else if (ev.u.output.rtype == UHID_OUTPUT_REPORT)
+      else if (ev.u.output.rtype == UHID_OUTPUT_REPORT) {
+        /**M: duplicate event send will lead current higher than target @{*/
+        if (ev.u.output.size > BTIF_HH_OUTPUT_REPORT_SIZE)
+        {
+            APPL_TRACE_WARNING("UHID_OUTPUT: Invalid report size %d",
+                ev.u.output.size);
+            return 0;
+        }
+        if (ev.u.output.size == BTIF_HH_OUTPUT_REPORT_SIZE &&
+            !memcmp(&p_dev->last_output_rpt_data, &ev.u.output.data,
+            BTIF_HH_OUTPUT_REPORT_SIZE)) {
+            /* Last output report same as current output report, don't inform to remote
+             * device as this could be the case when reports are being sent due to
+             * device suspend/resume. If same output report is sent to remote device
+             * device which uses UART as transport might not be able to suspend at all
+             * leading to higher battery drain.
+             */
+            APPL_TRACE_VERBOSE("UHID_OUTPUT: data same returning");
+            return 0;
+        }
+        /* Copy new output report data for future tracking */
+        memcpy(&p_dev->last_output_rpt_data, &ev.u.output.data, ev.u.output.size);
+        /**@}*/
         btif_hh_setreport(p_dev, BTHH_OUTPUT_REPORT, ev.u.output.size,
                           ev.u.output.data);
+      }
       else
         APPL_TRACE_ERROR("%s: UHID_OUTPUT: Invalid report type = %d", __func__,
                          ev.u.output.rtype);
@@ -163,6 +186,29 @@ static int uhid_read_event(btif_hh_device_t* p_dev) {
         APPL_TRACE_ERROR("%s: UHID_FEATURE: Invalid report type = %d", __func__,
                          ev.u.feature.rtype);
       break;
+    /**M:Feature for Kernel 3.18 or 4.4@{*/
+    case UHID_SET_REPORT:
+        if (ret < (ssize_t)(sizeof(ev.type) + sizeof(ev.u.set_report))) {
+            APPL_TRACE_ERROR("%s: Invalid size read from uhid-dev: %zd < %zu",
+                             __FUNCTION__, ret,
+                             sizeof(ev.type) + sizeof(ev.u.output));
+            return -EFAULT;
+        }
+
+        APPL_TRACE_DEBUG("UHID_SET_REPORT: Report type = %d, report_size = %d"
+                            ,ev.u.set_report.rtype, ev.u.set_report.size);
+        //Send SET_REPORT with feature report if the report type in output event is FEATURE
+        if(ev.u.set_report.rtype == UHID_FEATURE_REPORT)
+            btif_hh_setreport(p_dev, BTHH_FEATURE_REPORT,
+                              ev.u.set_report.size, ev.u.set_report.data);
+        else if(ev.u.set_report.rtype == UHID_OUTPUT_REPORT)
+            btif_hh_setreport(p_dev, BTHH_OUTPUT_REPORT,
+                              ev.u.set_report.size, ev.u.set_report.data);
+        else
+            btif_hh_setreport(p_dev, BTHH_INPUT_REPORT,
+                              ev.u.set_report.size, ev.u.set_report.data);
+        break;
+    /**@}*/
 
     default:
       APPL_TRACE_DEBUG("Invalid event from uhid-dev: %u\n", ev.type);
@@ -363,7 +409,9 @@ void bta_hh_co_open(uint8_t dev_handle, uint8_t sub_class,
     APPL_TRACE_ERROR("%s: Error: too many HID devices are connected", __func__);
     return;
   }
-
+  /**M: duplicate event send will lead current higher than target @{*/
+  memset(&p_dev->last_output_rpt_data, 0, BTIF_HH_OUTPUT_REPORT_SIZE);
+  /**@}*/
   p_dev->dev_status = BTHH_CONN_STATE_CONNECTED;
   p_dev->get_rpt_id_queue = fixed_queue_new(SIZE_MAX);
   CHECK(p_dev->get_rpt_id_queue);
@@ -406,6 +454,9 @@ void bta_hh_co_close(uint8_t dev_handle, uint8_t app_id) {
           "%s: Found an existing device with the same handle "
           "dev_status = %d, dev_handle =%d",
           __func__, p_dev->dev_status, p_dev->dev_handle);
+      /**M: duplicate event send will lead current higher than target @{*/
+      memset(&p_dev->last_output_rpt_data, 0, BTIF_HH_OUTPUT_REPORT_SIZE);
+      /**@}*/
       btif_hh_close_poll_thread(p_dev);
       break;
     }
@@ -484,6 +535,9 @@ void bta_hh_co_send_hid_info(btif_hh_device_t* p_dev, const char* dev_name,
                              uint8_t* p_dscp) {
   int result;
   struct uhid_event ev;
+  /**M:It is a workround for some HID device @{*/
+  uint8_t temp_buffer_IOT[1024];
+  /**@}*/
 
   if (p_dev->fd < 0) {
     APPL_TRACE_WARNING("%s: Error: fd = %d, dscp_len = %d", __func__, p_dev->fd,
@@ -506,6 +560,27 @@ void bta_hh_co_send_hid_info(btif_hh_device_t* p_dev, const char* dev_name,
            p_dev->bd_addr.ToString().c_str());
   ev.u.create.rd_size = dscp_len;
   ev.u.create.rd_data = p_dscp;
+  /**M: workround for some special device @{*/
+  //workaround for Logitech M557
+  if(vendor_id == 0x046d && product_id == 0xb010 && dscp_len >= 149)
+  {
+      ev.u.create.rd_size = 149;
+  }
+  //workaround for ThinkPad Bluetooth Touch Mouse
+  if(vendor_id == 0x17ef && product_id == 0x6063 && dscp_len >= 170)
+  {
+      memcpy(temp_buffer_IOT, p_dscp, 66);
+      memcpy(temp_buffer_IOT+66, p_dscp+134, 36);
+
+      ev.u.create.rd_size = 102;
+      ev.u.create.rd_data = temp_buffer_IOT;
+  }
+  //workaround for  Microsoft Sculpt Comfort Mouse
+  if(vendor_id == 0x045e && product_id == 0x07a2 && dscp_len >= 311)
+  {
+      ev.u.create.rd_size = 311;
+  }
+  /**@}*/
   ev.u.create.bus = BUS_BLUETOOTH;
   ev.u.create.vendor = vendor_id;
   ev.u.create.product = product_id;
@@ -571,7 +646,9 @@ void bta_hh_co_get_rpt_rsp(uint8_t dev_handle, uint8_t status, uint8_t* p_rpt,
   }
 
   // Send the HID report to the kernel.
-  if (p_dev->fd >= 0 && p_dev->get_rpt_snt--) {
+  /** M: If p_dev->get_rpt_snt is 0, it will become to 255 after p_dev->get_rpt_snt-- @{ */
+  if (p_dev->fd >= 0 && p_dev->get_rpt_snt > 0 && p_dev->get_rpt_snt--) {
+  /** @} */
     uint32_t* get_rpt_id =
         (uint32_t*)fixed_queue_dequeue(p_dev->get_rpt_id_queue);
     memset(&ev, 0, sizeof(ev));

@@ -40,6 +40,11 @@
 #include "osi/include/osi.h"
 #include "sdp_api.h"
 #include "sdpint.h"
+#include "../mediatek/include/mtk_bta_av_act.h"
+#include "mediatek/include/mtk_sdp_pbap.h"
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/stack/include/mtk_sdp_service.h"
+#endif
 
 #if (SDP_SERVER_ENABLED == TRUE)
 
@@ -149,6 +154,11 @@ void sdp_server_handle_client_req(tCONN_CB* p_ccb, BT_HDR* p_msg) {
     return;
   }
 
+  /** M: Bug fix for avrcp version dynamic adjust. @{ */
+  MtkRcUpdateSdpAvrcVersion(p_ccb->device_address);
+  /** M: Check which pbap version used. @{ */
+  mtk_check_pbap_version(p_ccb->device_address);
+  /** @} */
   switch (pdu_id) {
     case SDP_PDU_SERVICE_SEARCH_REQ:
       process_service_search(p_ccb, trans_num, param_len, p_req, p_req_end);
@@ -324,6 +334,12 @@ static void process_service_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
   bool is_cont = false;
   uint16_t attr_len;
 
+  /** M: Add for HFP 1.7 to 1.6 blacklist @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  uint8_t* p_attr_start;
+#endif
+  /** @} */
+
   if (p_req + sizeof(rec_handle) + sizeof(max_list_len) > p_req_end) {
     android_errorWriteLog(0x534e4554, "69384124");
     sdpu_build_n_send_error(p_ccb, trans_num, SDP_INVALID_SERV_REC_HDL,
@@ -418,6 +434,12 @@ static void process_service_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
         break;
       }
 
+      /** M: Add for HFP 1.7 to 1.6 blacklist @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      p_attr_start = p_rsp;
+#endif
+      /** @} */
+
       attr_len = sdpu_get_attrib_entry_len(p_attr);
       /* if there is a partial attribute pending to be sent */
       if (p_ccb->cont_info.attr_offset) {
@@ -455,6 +477,15 @@ static void process_service_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
         break;
       } else /* build the whole attribute */
         p_rsp = sdpu_build_attrib_entry(p_rsp, p_attr);
+
+        /** M: Add for HFP 1.7 to 1.6 blacklist @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+      if ((uint8_t)(p_rsp - p_attr_start) >=
+            (MTK_HFP_VERSION_SDP_POSITION + MTK_HFP_VERSION_OFFSET)) {
+          sdp_hfp_version_blacklist_check(p_attr, p_attr_start, p_ccb->device_address);
+      }
+#endif
+      /** @} */
 
       /* If doing a range, stick with this one till no more attributes found */
       if (attr_seq.attr_entry[xx].start != attr_seq.attr_entry[xx].end) {
@@ -559,6 +590,12 @@ static void process_service_search_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
   bool maxxed_out = false, is_cont = false;
   uint8_t* p_seq_start;
   uint16_t seq_len, attr_len;
+
+  /** M: Add for HFP 1.7 to 1.6 blacklist @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  uint8_t* p_attr_start;
+#endif
+  /** @} */
 
   /* Extract the UUID sequence to search for */
   p_req = sdpu_extract_uid_seq(p_req, param_len, &uid_seq);
@@ -665,6 +702,12 @@ static void process_service_search_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
           break;
         }
 
+        /** M: Add for HFP 1.7 to 1.6 blacklist @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+        p_attr_start = p_rsp;
+#endif
+        /** @} */
+
         attr_len = sdpu_get_attrib_entry_len(p_attr);
         /* if there is a partial attribute pending to be sent */
         if (p_ccb->cont_info.attr_offset) {
@@ -704,6 +747,15 @@ static void process_service_search_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
           break;
         } else /* build the whole attribute */
           p_rsp = sdpu_build_attrib_entry(p_rsp, p_attr);
+
+        /** M: Add for HFP 1.7 to 1.6 blacklist @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+        if ((uint8_t)(p_rsp - p_attr_start) >=
+            (MTK_HFP_VERSION_SDP_POSITION + MTK_HFP_VERSION_OFFSET)) {
+          sdp_hfp_version_blacklist_check(p_attr, p_attr_start, p_ccb->device_address);
+        }
+#endif
+        /** @} */
 
         /* If doing a range, stick with this one till no more attributes found
          */

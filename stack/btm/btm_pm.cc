@@ -767,8 +767,8 @@ void btm_pm_proc_mode_change(uint8_t hci_status, uint16_t hci_handle,
   p_cb->state = mode;
   p_cb->interval = interval;
 
-  BTM_TRACE_DEBUG("%s switched from %s to %s.", __func__,
-                  mode_to_string(old_state), mode_to_string(p_cb->state));
+  BTM_TRACE_DEBUG("%s switched from %s(%d) to %s(%d).", __func__,
+                  mode_to_string(old_state), old_state, mode_to_string(p_cb->state), p_cb->state);
 
   p_lcb = l2cu_find_lcb_by_bd_addr(p->remote_addr, BT_TRANSPORT_BR_EDR);
   if (p_lcb != NULL) {

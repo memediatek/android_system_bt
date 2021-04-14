@@ -24,6 +24,7 @@
 #include <sstream>
 
 #include "btif_av.h"
+#include "hardware/bt_av.h"
 #include "btif_common.h"
 #include "device.h"
 #include "stack/include/btu.h"
@@ -239,6 +240,97 @@ class MediaInterfaceWrapper : public MediaInterface {
     wrapped_->UnregisterUpdateCallback(callback);
   }
 
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+  void GetAppSettingChange(GetSettingChangeCallback get_setting_cb) override {
+    auto cb_lambda = [](GetSettingChangeCallback cb, BtrcPlayerSettings vals) {
+      do_in_main_thread(FROM_HERE, base::Bind(cb, vals));
+    };
+
+    auto bound_cb = base::Bind(cb_lambda, get_setting_cb);
+
+    do_in_avrcp_jni(base::Bind(&MediaInterface::GetAppSettingChange,
+                               base::Unretained(wrapped_), bound_cb));
+  }
+
+  void ListAppSettingAttrs(ListAttributesCallback list_attributes_cb) override {
+    auto cb_lambda = [](ListAttributesCallback cb, std::vector<BtrcPlayerAttr> attrs) {
+      do_in_main_thread(FROM_HERE, base::Bind(cb, std::move(attrs)));
+    };
+
+    auto bound_cb = base::Bind(cb_lambda, list_attributes_cb);
+
+    do_in_avrcp_jni(base::Bind(&MediaInterface::ListAppSettingAttrs,
+                               base::Unretained(wrapped_),
+                               bound_cb));
+  }
+
+  void ListAppSettingValues(uint8_t attr_id, ListValuesCallback list_values_cb) override {
+    auto cb_lambda = [](ListValuesCallback cb, std::vector<uint8_t> values) {
+      do_in_main_thread(FROM_HERE, base::Bind(cb, std::move(values)));
+    };
+
+    auto bound_cb = base::Bind(cb_lambda, list_values_cb);
+
+    do_in_avrcp_jni(base::Bind(&MediaInterface::ListAppSettingValues,
+                               base::Unretained(wrapped_), attr_id,
+                               bound_cb));
+  }
+
+  void GetAppSettingValues(std::vector<BtrcPlayerAttr> attrs,
+                              GetValuesCallback get_values_cb) override {
+    auto cb_lambda = [](GetValuesCallback cb, BtrcPlayerSettings vals) {
+      do_in_main_thread(FROM_HERE, base::Bind(cb, vals));
+    };
+
+    auto bound_cb = base::Bind(cb_lambda, get_values_cb);
+
+    do_in_avrcp_jni(base::Bind(&MediaInterface::GetAppSettingValues,
+                               base::Unretained(wrapped_), std::move(attrs),
+                               bound_cb));
+  }
+
+  void SetAppSettingValues(BtrcPlayerSettings vals,
+                              SetValuesCallback set_values_cb) override {
+    auto cb_lambda = [](SetValuesCallback cb, BtrcStatus rsp_status) {
+      do_in_main_thread(FROM_HERE, base::Bind(cb, rsp_status));
+    };
+
+    auto bound_cb = base::Bind(cb_lambda, set_values_cb);
+
+    do_in_avrcp_jni(base::Bind(&MediaInterface::SetAppSettingValues,
+                               base::Unretained(wrapped_), std::move(vals),
+                               bound_cb));
+  }
+
+  void GetAppSettingAttrsText(std::vector<BtrcPlayerAttr> attrs,
+                              GetAttrsTxtCallback get_attrs_txt_cb) override {
+    auto cb_lambda = [](GetAttrsTxtCallback cb,
+              std::vector<BtrcPlayerSettingText> attrs_txt) {
+      do_in_main_thread(FROM_HERE, base::Bind(cb, std::move(attrs_txt)));
+    };
+
+    auto bound_cb = base::Bind(cb_lambda, get_attrs_txt_cb);
+
+    do_in_avrcp_jni(base::Bind(&MediaInterface::GetAppSettingAttrsText,
+                               base::Unretained(wrapped_), std::move(attrs),
+                               bound_cb));
+  }
+
+  void GetAppSettingValuesText(uint8_t attr_id, std::vector<uint8_t> vals,
+                              GetValuesTxtCallback get_vals_txt_cb) override {
+    auto cb_lambda = [](GetValuesTxtCallback cb,
+              std::vector<BtrcPlayerSettingText> attrs_values_txt) {
+      do_in_main_thread(FROM_HERE, base::Bind(cb, std::move(attrs_values_txt)));
+    };
+
+    auto bound_cb = base::Bind(cb_lambda, get_vals_txt_cb);
+
+    do_in_avrcp_jni(base::Bind(&MediaInterface::GetAppSettingValuesText,
+                               base::Unretained(wrapped_), attr_id, std::move(vals),
+                               bound_cb));
+  }
+#endif
+
  private:
   MediaInterface* wrapped_;
 };
@@ -318,7 +410,9 @@ void AvrcpService::Cleanup() {
 }
 
 AvrcpService* AvrcpService::Get() {
-  CHECK(instance_);
+  /** M: To avoid use it before avrcp service init@{ */
+  //CHECK(instance_);
+  /** @} */
   return instance_;
 }
 
@@ -336,6 +430,54 @@ void AvrcpService::ConnectDevice(const RawAddress& bdaddr) {
   connection_handler_->ConnectDevice(bdaddr);
 }
 
+/** M:third party apk not rsp play status, check from the audio status @{ */
+void AvrcpService::MetadataChanged(const source_metadata_t* source_metadata,
+                                   btav_audio_state_t state) {
+  PlayState last_state = audio_status_;
+  PlayState last_a2dp_state = a2dp_status_;
+  if (!source_metadata) {
+    // is a2dp status callback,we just instrest a2dp suspend
+    if (state != BTAV_AUDIO_STATE_STARTED) {
+      audio_status_ = PlayState::PAUSED;
+      /** M:IOT carkit need a2dp status to avoid send play key @{ */
+      a2dp_status_ = PlayState::PAUSED;
+      /** @} */
+    } else  {
+      a2dp_status_ = PlayState::PLAYING;
+    }
+  } else {
+    // if callback from audio stream start
+    auto track_count = source_metadata->track_count;
+    auto tracks = source_metadata->tracks;
+    if (!btif_av_is_connected()) {
+      VLOG(2) << __func__ << ":av is not connected, ignore audio status.";
+      return;
+    }
+    while (track_count) {
+      VLOG(3) << __func__ << ": usage=" << tracks->usage
+              << ", content_type=" << tracks->content_type
+              << ", gain=" << tracks->gain;
+      if (((tracks->usage == AUDIO_USAGE_MEDIA || tracks->usage == AUDIO_USAGE_GAME) ||
+          (tracks->content_type == AUDIO_CONTENT_TYPE_MUSIC ||
+           tracks->content_type == AUDIO_CONTENT_TYPE_MOVIE ||
+          tracks->content_type == AUDIO_CONTENT_TYPE_SPEECH)) && (tracks->gain > 1e-6)){
+        audio_status_ = PlayState::PLAYING;
+        break;
+      }
+      --track_count;
+      ++tracks;
+    }
+  }
+  VLOG(2) << __func__ << ":pre_status = " << last_state << "; new_status = " << audio_status_
+          << "; a2dp_status_ = "<< a2dp_status_;
+  if (last_state != audio_status_ || last_a2dp_state != a2dp_status_) {
+    for (const auto& device : instance_->connection_handler_->GetListOfDevices()) {
+       do_in_main_thread(
+          FROM_HERE, base::Bind(&Device::HandlePlayStatusUpdate,device.get()->Get()));
+    }
+  }
+}
+/* }@ */
 void AvrcpService::DisconnectDevice(const RawAddress& bdaddr) {
   LOG(INFO) << __PRETTY_FUNCTION__ << ": address=" << bdaddr.ToString();
   connection_handler_->DisconnectDevice(bdaddr);
@@ -371,6 +513,19 @@ void AvrcpService::SendFolderUpdate(bool available_players,
                                             addressed_players, uids));
   }
 }
+
+#if defined(MTK_AVRCP_APP_SETTINGS) && (MTK_AVRCP_APP_SETTINGS == TRUE)
+void AvrcpService::SendAppSettingUpdate(bool setting_changed) {
+  LOG(INFO) << __PRETTY_FUNCTION__;
+
+  // Ensure that the update is posted to the correct thread
+  for (const auto& device :
+       instance_->connection_handler_->GetListOfDevices()) {
+    do_in_main_thread(FROM_HERE, base::Bind(&Device::SendSettingChange,
+                                       device.get()->Get(), setting_changed));
+  }
+}
+#endif
 
 // Send out the track changed info to update the playback state for each device
 void AvrcpService::SendActiveDeviceChanged(const RawAddress& address) {
@@ -448,7 +603,7 @@ bool AvrcpService::ServiceInterfaceImpl::Cleanup() {
 }
 
 void AvrcpService::DebugDump(int fd) {
-  if (instance_ == nullptr) {
+  if (instance_ == nullptr || instance_->connection_handler_ == nullptr) {
     dprintf(fd, "\nAVRCP Target Service not started\n");
     return;
   }

@@ -1277,3 +1277,33 @@ void stack_debug_avdtp_api_dump(int fd) {
     }
   }
 }
+
+/** M: Bug fix for not disconnect signal channel  @{ */
+/*******************************************************************************
+**
+** Function         AVDT_ULCloseReq
+**
+** Description      This function to trigger ccb checks for active streams on this CCB
+**
+** Returns          AVDT_SUCCESS if successful, otherwise error.
+**
+*******************************************************************************/
+uint16_t AVDT_ULCloseReq(const RawAddress&  bd_addr)
+{
+    AvdtpCcb*  p_ccb = NULL;
+    uint16_t  result = AVDT_SUCCESS;
+
+    /* find channel control block for this bd addr; if none, error */
+    if ((p_ccb = avdt_ccb_by_bd(bd_addr)) == NULL)
+    {
+        result = AVDT_BAD_PARAMS;
+    }
+
+    if (result == AVDT_SUCCESS)
+    {
+        /* tell ccb we're done with signaling channel */
+        avdt_ccb_event(p_ccb, AVDT_CCB_UL_CLOSE_EVT, NULL);
+    }
+    return result;
+}
+/** @} */

@@ -1097,6 +1097,7 @@ void gatt_client_handle_server_rsp(tGATT_TCB& tcb, uint8_t op_code,
         tcb.payload_size);
     gatt_end_operation(p_clcb, GATT_ERROR, NULL);
   } else {
+    LOG(INFO) << StringPrintf( "%s: opcode:%d", __func__, op_code);
     switch (op_code) {
       case GATT_RSP_ERROR:
         gatt_process_error_rsp(tcb, p_clcb, op_code, len, p_data);
@@ -1126,7 +1127,12 @@ void gatt_client_handle_server_rsp(tGATT_TCB& tcb, uint8_t op_code,
         break;
 
       case GATT_RSP_WRITE:
-        gatt_process_handle_rsp(p_clcb);
+        if ( p_clcb && p_clcb->operation == GATTC_OPTYPE_DISCOVERY && p_clcb->op_subtype == GATT_WRITE_NO_RSP){
+            // ignore this. it is a wrong response
+            LOG(INFO) << StringPrintf( "gatt_process_handle_rsp. discovering but Receives write rsp. current op %02d", p_clcb->operation);
+        }else{
+            gatt_process_handle_rsp(p_clcb);
+        }
         break;
 
       case GATT_RSP_PREPARE_WRITE:

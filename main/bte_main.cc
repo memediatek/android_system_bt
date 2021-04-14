@@ -55,6 +55,10 @@
 #include "osi/include/osi.h"
 #include "stack_config.h"
 
+#if defined(MTK_STACK_CONFIG_LOG) && (MTK_STACK_CONFIG_LOG == TRUE)
+#include "mediatek/include/twrite.h"
+#endif
+
 /*******************************************************************************
  *  Constants & Macros
  ******************************************************************************/
@@ -155,7 +159,11 @@ void bte_main_cleanup() {
 void bte_main_enable() {
   APPL_TRACE_DEBUG("%s", __func__);
 
+#if defined(MTK_STACK_CONFIG_LOG) && (MTK_STACK_CONFIG_LOG == TRUE)
+  module_start_up(get_module(MTK_BTSNOOP_MODULE));
+#else
   module_start_up(get_module(BTSNOOP_MODULE));
+#endif
   module_start_up(get_module(HCI_MODULE));
 
   BTU_StartUp();
@@ -175,7 +183,11 @@ void bte_main_disable(void) {
   APPL_TRACE_DEBUG("%s", __func__);
 
   module_shut_down(get_module(HCI_MODULE));
+#if defined(MTK_STACK_CONFIG_LOG) && (MTK_STACK_CONFIG_LOG == TRUE)
+  module_shut_down(get_module(MTK_BTSNOOP_MODULE));
+#else
   module_shut_down(get_module(BTSNOOP_MODULE));
+#endif
 
   BTU_ShutDown();
 }

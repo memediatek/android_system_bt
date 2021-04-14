@@ -35,6 +35,10 @@
 #include "l2c_api.h"
 #include "osi/include/osi.h"
 
+/** M: Bug fix for the connection procedure while link is disconnecting @{ */
+#include "mediatek/stack/include/l2c_api.h"
+/** @} */
+
 using base::StringPrintf;
 
 /* Configuration flags. */
@@ -360,6 +364,11 @@ bool gatt_act_connect(tGATT_REG* p_reg, const RawAddress& bd_addr,
       if (!gatt_connect(bd_addr, p_tcb, transport, initiating_phys,
                         p_reg->gatt_if))
         return false;
+
+      /** M: Bug fix for the connection procedure while link is disconnecting @{ */
+      if (L2CA_IsFixedChnlPending(L2CAP_ATT_CID, bd_addr))
+        gatt_set_ch_state(p_tcb, GATT_CH_CONN);
+      /** @} */
     } else if (st == GATT_CH_CLOSING) {
       LOG(INFO) << "Must finish disconnection before new connection";
       /* need to complete the closing first */
@@ -424,6 +433,14 @@ static void gatt_le_connect_cback(uint16_t chan, const RawAddress& bd_addr,
 
   /* do we have a channel initiating a connection? */
   if (p_tcb) {
+      /** M: if cancel connect before @{ */
+      if (gatt_get_ch_state(p_tcb) == GATT_CH_CLOSING)
+      {
+          L2CA_RemoveFixedChnl(L2CAP_ATT_CID, p_tcb->peer_bda);
+          return;
+      }
+      /** @} */
+
     /* we are initiating connection */
     if (gatt_get_ch_state(p_tcb) == GATT_CH_CONN) {
       /* send callback */

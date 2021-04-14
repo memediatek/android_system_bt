@@ -69,6 +69,7 @@ enum {
   BTA_AG_SETCODEC,
   BTA_AG_SEND_RING,
   BTA_AG_HANDLE_COLLISION,
+  BTA_AG_RFC_SRV_CLOSE,
   BTA_AG_NUM_ACTIONS
 };
 
@@ -162,7 +163,8 @@ const tBTA_AG_ACTION bta_ag_action[] = {
     bta_ag_sco_conn_close, bta_ag_sco_listen,    bta_ag_sco_open,
     bta_ag_sco_close,      bta_ag_sco_shutdown,  bta_ag_post_sco_open,
     bta_ag_post_sco_close, bta_ag_svc_conn_open, bta_ag_result,
-    bta_ag_setcodec,       bta_ag_send_ring,     bta_ag_handle_collision};
+    bta_ag_setcodec,       bta_ag_send_ring,     bta_ag_handle_collision,
+    bta_ag_rfc_srv_close};
 
 static_assert(sizeof(bta_ag_action) / sizeof(tBTA_AG_ACTION) ==
                   BTA_AG_NUM_ACTIONS,
@@ -241,7 +243,7 @@ const uint8_t bta_ag_st_open[][BTA_AG_NUM_COLS] = {
     /* API_SETCODEC_EVT */ {BTA_AG_SETCODEC, BTA_AG_IGNORE, BTA_AG_OPEN_ST},
     /* RFC_OPEN_EVT */ {BTA_AG_IGNORE, BTA_AG_IGNORE, BTA_AG_OPEN_ST},
     /* RFC_CLOSE_EVT */ {BTA_AG_RFC_CLOSE, BTA_AG_IGNORE, BTA_AG_INIT_ST},
-    /* RFC_SRV_CLOSE_EVT */ {BTA_AG_IGNORE, BTA_AG_IGNORE, BTA_AG_OPEN_ST},
+    /* RFC_SRV_CLOSE_EVT */ {BTA_AG_RFC_SRV_CLOSE, BTA_AG_IGNORE, BTA_AG_INIT_ST},
     /* RFC_DATA_EVT */ {BTA_AG_RFC_DATA, BTA_AG_IGNORE, BTA_AG_OPEN_ST},
     /* SCO_OPEN_EVT */
     {BTA_AG_SCO_CONN_OPEN, BTA_AG_POST_SCO_OPEN, BTA_AG_OPEN_ST},
@@ -275,7 +277,7 @@ const uint8_t bta_ag_st_closing[][BTA_AG_NUM_COLS] = {
     /* SCO_CLOSE_EVT */
     {BTA_AG_SCO_CONN_CLOSE, BTA_AG_POST_SCO_CLOSE, BTA_AG_CLOSING_ST},
     /* DISC_ACP_RES_EVT */ {BTA_AG_FREE_DB, BTA_AG_IGNORE, BTA_AG_CLOSING_ST},
-    /* DISC_INT_RES_EVT */ {BTA_AG_FREE_DB, BTA_AG_IGNORE, BTA_AG_INIT_ST},
+    /* DISC_INT_RES_EVT */ {BTA_AG_FREE_DB, BTA_AG_RFC_CLOSE, BTA_AG_INIT_ST},
     /* DISC_OK_EVT */ {BTA_AG_IGNORE, BTA_AG_IGNORE, BTA_AG_CLOSING_ST},
     /* DISC_FAIL_EVT */ {BTA_AG_IGNORE, BTA_AG_IGNORE, BTA_AG_CLOSING_ST},
     /* RING_TOUT_EVT */ {BTA_AG_IGNORE, BTA_AG_IGNORE, BTA_AG_CLOSING_ST},

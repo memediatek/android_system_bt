@@ -55,6 +55,12 @@
 #include "gap_api.h"
 #endif
 
+/** M: Add HID blacklist to skip sniff mode @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+/** @} */
+
 using bluetooth::Uuid;
 
 static void bta_dm_inq_results_cb(tBTM_INQ_RESULTS* p_inq, uint8_t* p_eir,
@@ -390,6 +396,9 @@ static void bta_dm_sys_hw_cback(tBTA_SYS_HW_EVT status) {
     alarm_free(bta_dm_search_cb.search_timer);
     alarm_free(bta_dm_search_cb.gatt_close_timer);
     memset(&bta_dm_search_cb, 0, sizeof(bta_dm_search_cb));
+    /** M: bug fix to correct the initial value of name_discover_done @{ */
+    bta_dm_search_cb.name_discover_done = true;
+    /** @} */
     /*
      * TODO: Should alarm_free() the bta_dm_search_cb timers during
      * graceful shutdown.
@@ -535,10 +544,13 @@ static void bta_dm_disable_timer_cback(void* data) {
                          bta_dm_disable_timer_cback, UINT_TO_PTR(1));
     }
   } else {
-    bta_dm_cb.disabling = false;
+    /** M: clear resource when bt off @{ */
+    //bta_dm_cb.disabling = false;
 
     bta_sys_remove_uuid(UUID_SERVCLASS_PNP_INFORMATION);
-    bta_dm_cb.p_sec_cback(BTA_DM_DISABLE_EVT, NULL);
+    //bta_dm_cb.p_sec_cback(BTA_DM_DISABLE_EVT, NULL);
+    bta_dm_disable_conn_down_timer_cback(NULL);
+    /** @} */
   }
 }
 
@@ -1356,14 +1368,17 @@ void bta_dm_sdp_result(tBTA_DM_MSG* p_data) {
     do {
       p_sdp_rec = NULL;
       if (bta_dm_search_cb.service_index == (BTA_USER_SERVICE_ID + 1)) {
-        p_sdp_rec = SDP_FindServiceUUIDInDb(bta_dm_search_cb.p_sdp_db,
-                                            bta_dm_search_cb.uuid, p_sdp_rec);
+        /** M: only find the user specified UUID when BTA_USER_SERVICE_MASK is set @{ */
+        if (bta_dm_search_cb.services & BTA_USER_SERVICE_MASK) {
+          p_sdp_rec = SDP_FindServiceUUIDInDb(bta_dm_search_cb.p_sdp_db,
+                                              bta_dm_search_cb.uuid, p_sdp_rec);
 
-        if (p_sdp_rec && SDP_FindProtocolListElemInRec(
-                             p_sdp_rec, UUID_PROTOCOL_RFCOMM, &pe)) {
-          bta_dm_search_cb.peer_scn = (uint8_t)pe.params[0];
-          scn_found = true;
-        }
+          if (p_sdp_rec && SDP_FindProtocolListElemInRec(
+                               p_sdp_rec, UUID_PROTOCOL_RFCOMM, &pe)) {
+            bta_dm_search_cb.peer_scn = (uint8_t)pe.params[0];
+            scn_found = true;
+          }
+        } /** @} */
       } else {
         service =
             bta_service_id_to_uuid_lkup_tbl[bta_dm_search_cb.service_index - 1];
@@ -1413,8 +1428,22 @@ void bta_dm_sdp_result(tBTA_DM_MSG* p_data) {
             uint16_t tmp_svc =
                 bta_service_id_to_uuid_lkup_tbl[bta_dm_search_cb.service_index -
                                                 1];
+/** M: Add HID blacklist to skip HID service @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+            if (interop_mtk_match_addr_name(INTEROP_MTK_HID_PEER_NOT_USE_HID,
+                &bta_dm_search_cb.peer_bdaddr)) {
+              if (UUID_SERVCLASS_HUMAN_INTERFACE != tmp_svc)
+                uuid_list.push_back(Uuid::From16Bit(tmp_svc));
+            } else if(interop_mtk_match_addr_name(INTEROP_MTK_PAN_NAP_IGNORE_PEER_NAP_CAPABILITY,
+                &bta_dm_search_cb.peer_bdaddr)) {
+              if (UUID_SERVCLASS_NAP != tmp_svc)
+                uuid_list.push_back(Uuid::From16Bit(tmp_svc));
+            } else
+#endif
+            {
             /* Add to the list of UUIDs */
             uuid_list.push_back(Uuid::From16Bit(tmp_svc));
+            }
           }
         }
       }
@@ -1736,7 +1765,12 @@ void bta_dm_search_cancel_cmpl(UNUSED_ATTR tBTA_DM_MSG* p_data) {
  *
  ******************************************************************************/
 void bta_dm_search_cancel_transac_cmpl(UNUSED_ATTR tBTA_DM_MSG* p_data) {
-  osi_free_and_reset((void**)&bta_dm_search_cb.p_sdp_db);
+  /** M: Cancel service search before free sdp db @{ */
+  if (bta_dm_search_cb.p_sdp_db) {
+    SDP_CancelServiceSearch(bta_dm_search_cb.p_sdp_db);
+    osi_free_and_reset((void**)&bta_dm_search_cb.p_sdp_db);
+  }
+  /** @} */
   bta_dm_search_cancel_notify(NULL);
 }
 
@@ -1963,7 +1997,11 @@ static void bta_dm_discover_device(const RawAddress& remote_bd_addr) {
     /* starting name discovery failed */
     bta_dm_search_cb.name_discover_done = true;
   }
-
+  /** M: bug fix to reset the value of name_discover_done if no need to perform RNR @{ */
+  else {
+    bta_dm_search_cb.name_discover_done = true;
+  }
+  /** @} */
   /* if application wants to discover service */
   if (bta_dm_search_cb.services) {
     /* initialize variables */
@@ -2102,6 +2140,7 @@ static void bta_dm_inq_results_cb(tBTM_INQ_RESULTS* p_inq, uint8_t* p_eir,
     if (result.inq_res.remt_name_not_required)
       p_inq_info->appl_knows_rem_name = true;
   }
+  APPL_TRACE_DEBUG("%s appl_knows_rem_name=%d", __func__,  p_inq_info->appl_knows_rem_name);
 }
 
 /*******************************************************************************
@@ -2278,6 +2317,14 @@ static void bta_dm_pinname_cback(void* p_data) {
   tBTA_DM_SEC sec_event;
   uint32_t bytes_to_copy;
   tBTA_DM_SEC_EVT event = bta_dm_cb.pin_evt;
+  /** M: restore the authentication requirement @{ */
+  memset(&sec_event, 0, sizeof(tBTA_DM_SEC));
+  tBTM_SEC_DEV_REC* p_dev_rec = btm_find_or_alloc_dev(bta_dm_cb.pin_bd_addr);
+  if (!p_dev_rec) {
+    APPL_TRACE_DEBUG("%s cannot find the device", __func__);
+    return;
+  }
+  /** @} */
 
   if (BTA_DM_SP_CFM_REQ_EVT == event) {
     /* Retrieved saved device class and bd_addr */
@@ -2317,6 +2364,15 @@ static void bta_dm_pinname_cback(void* p_data) {
       memcpy(sec_event.pin_req.bd_name, p_result->remote_bd_name,
              bytes_to_copy);
       sec_event.pin_req.bd_name[BD_NAME_LEN - 1] = 0;
+      /** M: fill correct info before callback @{ */
+      if (BTA_DM_PIN_REQ_EVT == event) {
+        sec_event.pin_req.min_16_digit = (p_dev_rec->p_cur_service == NULL) ? FALSE
+                                          : (p_dev_rec->p_cur_service->security_flags &
+                                             BTM_SEC_IN_MIN_16_DIGIT_PIN);
+        APPL_TRACE_DEBUG("%s min_16_digit=%d", __func__,
+                         sec_event.pin_req.min_16_digit);
+      }
+      /** @} */
     } else /* No name found */
       sec_event.pin_req.bd_name[0] = 0;
 
@@ -2472,6 +2528,9 @@ static uint8_t bta_dm_sp_cback(tBTM_SP_EVT event, tBTM_SP_EVT_DATA* p_data) {
   tBTM_STATUS status = BTM_CMD_STARTED;
   tBTA_DM_SEC sec_event;
   tBTA_DM_SEC_EVT pin_evt = BTA_DM_SP_KEY_NOTIF_EVT;
+  /** M: variable initialization @{ */
+  memset(&sec_event, 0, sizeof(tBTA_DM_SEC));
+  /** @} */
 
   APPL_TRACE_EVENT("bta_dm_sp_cback: %d", event);
   if (!bta_dm_cb.p_sec_cback) return BTM_NOT_AUTHORIZED;
@@ -2519,6 +2578,9 @@ static uint8_t bta_dm_sp_cback(tBTM_SP_EVT event, tBTM_SP_EVT_DATA* p_data) {
           p_data->key_notif.passkey;
 
       if (BTM_SP_CFM_REQ_EVT == event) {
+        /** M: use the correct addr and transfer it to uplayer @{ */
+        sec_event.cfm_req.bd_addr = p_data->cfm_req.bd_addr;
+        /** @} */
         /* Due to the switch case falling through below to BTM_SP_KEY_NOTIF_EVT,
            call remote name request using values from cfm_req */
         if (p_data->cfm_req.bd_name[0] == 0) {
@@ -2541,15 +2603,20 @@ static uint8_t bta_dm_sp_cback(tBTM_SP_EVT event, tBTM_SP_EVT_DATA* p_data) {
           /* Due to the switch case falling through below to
              BTM_SP_KEY_NOTIF_EVT,
              copy these values into key_notif from cfm_req */
-          sec_event.key_notif.bd_addr = p_data->cfm_req.bd_addr;
-          BTA_COPY_DEVICE_CLASS(sec_event.key_notif.dev_class,
+          /** M: use the correct addr and transfer it to uplayer @{ */
+          // sec_event.key_notif.bd_addr = p_data->cfm_req.bd_addr;
+          BTA_COPY_DEVICE_CLASS(sec_event.cfm_req.dev_class,
                                 p_data->cfm_req.dev_class);
-          strlcpy((char*)sec_event.key_notif.bd_name,
+          strlcpy((char*)sec_event.cfm_req.bd_name,
                   (char*)p_data->cfm_req.bd_name, BD_NAME_LEN);
+          /** @} */
         }
       }
 
       if (BTM_SP_KEY_NOTIF_EVT == event) {
+        /** M: use the correct addr and transfer it to uplayer @{ */
+        sec_event.key_notif.bd_addr = p_data->key_notif.bd_addr;
+        /** @} */
         /* If the device name is not known, save bdaddr and devclass
            and initiate a name request with values from key_notif */
         if (p_data->key_notif.bd_name[0] == 0) {
@@ -2564,7 +2631,7 @@ static uint8_t bta_dm_sp_cback(tBTM_SP_EVT event, tBTM_SP_EVT_DATA* p_data) {
           APPL_TRACE_WARNING(
               " bta_dm_sp_cback() -> Failed to start Remote Name Request  ");
         } else {
-          sec_event.key_notif.bd_addr = p_data->key_notif.bd_addr;
+          // sec_event.key_notif.bd_addr = p_data->key_notif.bd_addr;
           BTA_COPY_DEVICE_CLASS(sec_event.key_notif.dev_class,
                                 p_data->key_notif.dev_class);
           strlcpy((char*)sec_event.key_notif.bd_name,
@@ -2747,6 +2814,12 @@ static void bta_dm_acl_change(bool is_new, const RawAddress& bd_addr,
     uint8_t* p;
     if (((NULL != (p = BTM_ReadLocalFeatures())) &&
          HCI_SNIFF_SUB_RATE_SUPPORTED(p)) &&
+/** M: Add HID blacklist to skip sniff mode @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+        (!interop_mtk_match_addr_name(INTEROP_MTK_HID_NOT_DO_SNIFF_SUBRATING,
+            &bd_addr)) &&
+#endif
+/** @} */
         ((NULL != (p = BTM_ReadRemoteFeatures(bd_addr))) &&
          HCI_SNIFF_SUB_RATE_SUPPORTED(p))) {
       /* both local and remote devices support SSR */
@@ -2764,8 +2837,12 @@ static void bta_dm_acl_change(bool is_new, const RawAddress& bd_addr,
 
       if (bta_dm_cb.device_list.peer_device[i].conn_state == BTA_DM_UNPAIRING) {
         if (BTM_SecDeleteDevice(
-                bta_dm_cb.device_list.peer_device[i].peer_bdaddr))
+                bta_dm_cb.device_list.peer_device[i].peer_bdaddr)) {
+          /** M: refresh gatt DB when unbond the device @{ */
+          BTA_GATTC_Refresh(bd_addr);
+          /** @} */
           issue_unpair_cb = true;
+        }
 
         APPL_TRACE_DEBUG("%s: Unpairing: issue unpair CB = %d ", __func__,
                          issue_unpair_cb);
@@ -3877,6 +3954,13 @@ static uint8_t bta_dm_ble_smp_cback(tBTM_LE_EVT event, const RawAddress& bda,
 
       } else {
         sec_event.auth_cmpl.success = true;
+        /** M: Bug fix for smp over BR @{ */
+        sec_event.auth_cmpl.smp_over_br = p_data->complt.smp_over_br;
+        /** @} */
+        /** M: Bug fix for ble sec db delete bug @{ */
+        bta_dm_reset_sec_dev_pending(bda);
+        /** @} */
+
         if (!p_data->complt.smp_over_br)
           GATT_ConfigServiceChangeCCC(bda, true, BT_TRANSPORT_LE);
       }

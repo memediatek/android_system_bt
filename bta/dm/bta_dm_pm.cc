@@ -36,6 +36,11 @@
 #include "bta_sys.h"
 #include "btm_api.h"
 #include "stack/include/btu.h"
+/** M: Add HID blacklist to skip sniff mode @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+/** @} */
 
 static void bta_dm_pm_cback(tBTA_SYS_CONN_STATUS status, uint8_t id,
                             uint8_t app_id, const RawAddress& peer_addr);
@@ -458,6 +463,12 @@ static void bta_dm_pm_cback(tBTA_SYS_CONN_STATUS status, uint8_t id,
     uint8_t* p = NULL;
     if (((NULL != (p = BTM_ReadLocalFeatures())) &&
          HCI_SNIFF_SUB_RATE_SUPPORTED(p)) &&
+/** M: Add HID blacklist to skip sniff mode @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+        (!interop_mtk_match_addr_name(INTEROP_MTK_HID_NOT_DO_SNIFF_SUBRATING,
+            &peer_addr)) &&
+#endif
+/** @} */
         ((NULL != (p = BTM_ReadRemoteFeatures(peer_addr))) &&
          HCI_SNIFF_SUB_RATE_SUPPORTED(p)) &&
         (index == BTA_DM_PM_SSR0)) {
@@ -473,6 +484,10 @@ static void bta_dm_pm_cback(tBTA_SYS_CONN_STATUS status, uint8_t id,
 #endif
 
   bta_dm_pm_set_mode(peer_addr, BTA_DM_PM_NO_ACTION, pm_req);
+
+  /** M: Return here. The HID workaround is not applicable to MTK firmware. Skip it @{ */
+  return;
+  /** @} */
 
   /* perform the HID link workaround if needed
   ** 1. If SCO up/down event is received OR
@@ -706,8 +721,25 @@ static bool bta_dm_pm_sniff(tBTA_DM_PEER_DEVICE* p_peer_dev, uint8_t index) {
   uint8_t* p_rem_feat = BTM_ReadRemoteFeatures(p_peer_dev->peer_bdaddr);
   APPL_TRACE_DEBUG("bta_dm_pm_sniff cur:%d, idx:%d, info:x%x", mode, index,
                    p_peer_dev->info);
+/** M: Add HFP blacklist to skip sniff mode when SCO open@{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+  if((interop_mtk_match_addr_name(INTEROP_MTK_HFP_SCO_OPEN_NOT_DO_SNIFF,
+     &p_peer_dev->peer_bdaddr)) && bta_dm_pm_is_sco_active()){
+      APPL_TRACE_DEBUG("%s: do not enter the sniff when sco open", __func__);
+      return true;
+  }
+
+#endif
+/** @} */
+
   if (mode != BTM_PM_MD_SNIFF ||
       (HCI_SNIFF_SUB_RATE_SUPPORTED(BTM_ReadLocalFeatures()) && p_rem_feat &&
+/** M: Add HID blacklist to skip sniff mode @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+       (!interop_mtk_match_addr_name(INTEROP_MTK_HID_NOT_DO_SNIFF_SUBRATING,
+           &p_peer_dev->peer_bdaddr)) &&
+#endif
+/** @} */
        HCI_SNIFF_SUB_RATE_SUPPORTED(p_rem_feat) &&
        !(p_peer_dev->info & BTA_DM_DI_USE_SSR))) {
     /* Dont initiate Sniff if controller has alreay accepted

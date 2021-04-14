@@ -44,6 +44,10 @@
 #include "osi/include/osi.h"
 #include "osi/include/properties.h"
 
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
+#endif
+
 // Macro to retrieve the number of elements in a statically allocated array
 #define BTA_AV_CO_NUM_ELEMENTS(__a) (sizeof(__a) / sizeof((__a)[0]))
 
@@ -123,6 +127,13 @@ class BtaAvCoPeer {
    * @return the BTA AV handle
    */
   tBTA_AV_HNDL BtaAvHandle() const { return bta_av_handle_; }
+
+  /**
+   * Set the BTA AV handle.
+   *
+   * @param bta_av_handle the BTA AV handle to use
+   */
+  void BtaAvSetHandle(tBTA_AV_HNDL bta_av_handle) { bta_av_handle_ = bta_av_handle; }
 
   /**
    * Get the A2DP codecs.
@@ -700,6 +711,7 @@ static const bool kContentProtectEnabled = true;
 static const bool kContentProtectEnabled = false;
 #endif
 static BtaAvCo bta_av_co_cb(kContentProtectEnabled);
+static std::mutex active_peer_lock_;
 
 void BtaAvCoPeer::Init(
     const std::vector<btav_a2dp_codec_config_t>& codec_priorities) {
@@ -898,6 +910,10 @@ void BtaAvCo::ProcessDiscoveryResult(tBTA_AV_HNDL bta_av_handle,
   } else if (uuid_local == UUID_SERVCLASS_AUDIO_SOURCE) {
     p_peer->uuid_to_connect = UUID_SERVCLASS_AUDIO_SINK;
   }
+  /** M: Bug fix. Update handle after avdtp discover to avoid some corner case. @{ */
+  if (p_peer->BtaAvHandle() != bta_av_handle)
+    p_peer->BtaAvSetHandle(bta_av_handle);
+  /** @} */
 }
 
 tA2DP_STATUS BtaAvCo::ProcessSourceGetConfig(
@@ -931,17 +947,26 @@ tA2DP_STATUS BtaAvCo::ProcessSourceGetConfig(
   if (A2DP_IsPeerSinkCodecValid(p_codec_info)) {
     // If there is room for a new one
     if (p_peer->num_sup_sinks < BTA_AV_CO_NUM_ELEMENTS(p_peer->sinks)) {
-      BtaAvCoSep* p_sink = &p_peer->sinks[p_peer->num_sup_sinks++];
+      #if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+        if (A2DP_GetCodecType(p_codec_info) == A2DP_MEDIA_CT_AAC &&
+            interop_mtk_match_addr_name(INTEROP_MTK_A2DP_DISABLE_AAC_CODEC,
+                                                                       &peer_address)) {
+          APPL_TRACE_DEBUG("%s: disable %s AAC codec", __func__, peer_address.ToString().c_str());
+        } else
+      #endif
+        {
+        BtaAvCoSep* p_sink = &p_peer->sinks[p_peer->num_sup_sinks++];
 
-      APPL_TRACE_DEBUG("%s: saved caps[%x:%x:%x:%x:%x:%x]", __func__,
+        APPL_TRACE_DEBUG("%s: saved caps[%x:%x:%x:%x:%x:%x]", __func__,
                        p_codec_info[1], p_codec_info[2], p_codec_info[3],
                        p_codec_info[4], p_codec_info[5], p_codec_info[6]);
 
-      memcpy(p_sink->codec_caps, p_codec_info, AVDT_CODEC_SIZE);
-      p_sink->sep_info_idx = *p_sep_info_idx;
-      p_sink->seid = seid;
-      p_sink->num_protect = *p_num_protect;
-      memcpy(p_sink->protect_info, p_protect_info, AVDT_CP_INFO_LEN);
+        memcpy(p_sink->codec_caps, p_codec_info, AVDT_CODEC_SIZE);
+        p_sink->sep_info_idx = *p_sep_info_idx;
+        p_sink->seid = seid;
+        p_sink->num_protect = *p_num_protect;
+        memcpy(p_sink->protect_info, p_protect_info, AVDT_CP_INFO_LEN);
+      }
     } else {
       APPL_TRACE_ERROR("%s: peer %s : no more room for Sink info", __func__,
                        p_peer->addr.ToString().c_str());
@@ -1286,6 +1311,8 @@ void BtaAvCo::ProcessClose(tBTA_AV_HNDL bta_av_handle,
   }
   // Reset the active peer
   if (active_peer_ == p_peer) {
+    APPL_TRACE_DEBUG("%s: reset active peer lock", __func__);
+    std::lock_guard<std::mutex> peer_lock(active_peer_lock_);
     active_peer_ = nullptr;
   }
   // Mark the peer closed and clean the peer info
@@ -1327,7 +1354,9 @@ BT_HDR* BtaAvCo::GetNextSourceDataPacket(const uint8_t* p_codec_info,
   BT_HDR* p_buf;
 
   APPL_TRACE_DEBUG("%s: codec: %s", __func__, A2DP_CodecName(p_codec_info));
-
+  /** M: Fix TX queue list empty NE isssue:don't send data when active peer null  @{ */
+  if (active_peer_ == nullptr) return nullptr;
+  /** @} */
   p_buf = btif_a2dp_source_audio_readbuf();
   if (p_buf == nullptr) return nullptr;
 
@@ -1402,8 +1431,11 @@ bool BtaAvCo::SetActivePeer(const RawAddress& peer_address) {
   }
 
   // Find the peer
+  APPL_TRACE_DEBUG("%s: find active peer lock", __func__);
+  std::lock_guard<std::mutex> peer_lock(active_peer_lock_);
   BtaAvCoPeer* p_peer = FindPeer(peer_address);
   if (p_peer == nullptr) {
+     APPL_TRACE_DEBUG("%s: find peer is nullptr and unlock", __func__);
     return false;
   }
 
@@ -1412,6 +1444,7 @@ bool BtaAvCo::SetActivePeer(const RawAddress& peer_address) {
   APPL_TRACE_DEBUG("%s: codec = %s", __func__,
                    A2DP_CodecInfoString(codec_config_).c_str());
   ReportSourceCodecState(active_peer_);
+  APPL_TRACE_DEBUG("%s: find active peer unlock", __func__);
   return true;
 }
 

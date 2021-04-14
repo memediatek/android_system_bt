@@ -189,7 +189,9 @@ typedef union {
 
 } tBTA_DM_MSG;
 
-#define BTA_DM_NUM_PEER_DEVICE 7
+/** M: Feature change for FW multi-links, 7BR+32BLE @{ */
+#define BTA_DM_NUM_PEER_DEVICE MAX_L2CAP_LINKS
+/** @} */
 
 #define BTA_DM_NOT_CONNECTED 0
 #define BTA_DM_CONNECTED 1

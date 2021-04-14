@@ -34,14 +34,34 @@
 #include "osi/include/osi.h"
 #include "stack/include/btu.h"
 #include "utl.h"
+#include "bta_dm_api.h"
+
+/** M: New Feature for setting volume support to property. @{ */
+#include <cutils/properties.h>
+/** @ } */
+
+/* Codec negotiation timeout */
+#ifndef BTA_AG_CODEC_NEGOTIATION_ORI_TIMEOUT_MS
+#define BTA_AG_CODEC_NEGOTIATION_ORI_TIMEOUT_MS (3 * 1000) /* 3 seconds */
+#endif
 
 /* Codec negotiation timeout */
 #ifndef BTA_AG_CODEC_NEGOTIATION_TIMEOUT_MS
-#define BTA_AG_CODEC_NEGOTIATION_TIMEOUT_MS (3 * 1000) /* 3 seconds */
+/** M: Change the codec negotiation timeout from 3s to 15s @{ */
+#define BTA_AG_CODEC_NEGOTIATION_TIMEOUT_MS (15 * 1000) /* 15 seconds */
+/** @} */
+#endif
+
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+#include "mediatek/include/interop_mtk.h"
 #endif
 
 static bool sco_allowed = true;
 static RawAddress active_device_addr = {};
+
+/** M: Modify for SCO retry @{ */
+static bool retry_with_sco_only = false; /* indicator to try with SCO only when eSCO fails */
+/** @} */
 
 /* sco events */
 enum {
@@ -124,6 +144,9 @@ static void bta_ag_sco_conn_cback(uint16_t sco_idx) {
   /* match callback to scb; first check current sco scb */
   if (bta_ag_cb.sco.p_curr_scb != nullptr && bta_ag_cb.sco.p_curr_scb->in_use) {
     handle = bta_ag_scb_to_idx(bta_ag_cb.sco.p_curr_scb);
+    /** M: Do not enter Sniff mode after created SCO @{ */
+    p_scb = bta_ag_cb.sco.p_curr_scb;
+    /** @} */
   }
   /* then check for scb connected to this peer */
   else {
@@ -137,6 +160,12 @@ static void bta_ag_sco_conn_cback(uint16_t sco_idx) {
     do_in_main_thread(FROM_HERE,
                       base::Bind(&bta_ag_sm_execute_by_handle, handle,
                                  BTA_AG_SCO_OPEN_EVT, tBTA_AG_DATA::kEmpty));
+/** M: Do not enter Sniff mode after created SCO @{ */
+  if (p_scb) {
+    uint8_t set_policy = HCI_ENABLE_SNIFF_MODE;
+    bta_sys_clear_policy(BTA_ID_AG, set_policy, p_scb->peer_addr);
+  }
+/** @} */
   } else {
     /* no match found; disconnect sco, init sco variables */
     bta_ag_cb.sco.p_curr_scb = nullptr;
@@ -182,6 +211,14 @@ static void bta_ag_sco_disc_cback(uint16_t sco_idx) {
     }
     handle = bta_ag_scb_to_idx(bta_ag_cb.sco.p_curr_scb);
   }
+
+/** M: Accept enter Sniff mode after disconnected SCO @{ */
+  if (bta_ag_cb.sco.p_curr_scb != nullptr)
+  {
+    uint8_t set_policy = HCI_ENABLE_SNIFF_MODE;
+    bta_sys_set_policy(BTA_ID_AG, set_policy, bta_ag_cb.sco.p_curr_scb->peer_addr);
+  }
+/** @} */
 
   if (handle != 0) {
 
@@ -247,7 +284,10 @@ static void bta_ag_sco_disc_cback(uint16_t sco_idx) {
 static bool bta_ag_remove_sco(tBTA_AG_SCB* p_scb, bool only_active) {
   if (p_scb->sco_idx != BTM_INVALID_SCO_INDEX) {
     if (!only_active || p_scb->sco_idx == bta_ag_cb.sco.cur_idx) {
-      tBTM_STATUS status = BTM_RemoveSco(p_scb->sco_idx);
+      tBTM_STATUS status = BTM_ERR_PROCESSING;
+
+      bta_sys_busy(BTA_ID_AG, p_scb->app_id, p_scb->peer_addr);
+      status = BTM_RemoveSco(p_scb->sco_idx);
       APPL_TRACE_DEBUG("%s: SCO index 0x%04x, status %d", __func__,
                        p_scb->sco_idx, status);
       if (status == BTM_CMD_STARTED) {
@@ -387,7 +427,9 @@ static void bta_ag_create_sco(tBTA_AG_SCB* p_scb, bool is_orig) {
   }
 
 #if (DISABLE_WBS == FALSE)
-  if ((p_scb->sco_codec == BTA_AG_CODEC_MSBC) && !p_scb->codec_fallback)
+  /** M: Modify for SCO retry @{ */
+  if ((p_scb->sco_codec == BTA_AG_CODEC_MSBC) && !p_scb->codec_fallback && !retry_with_sco_only)
+  /** @} */
     esco_codec = BTA_AG_CODEC_MSBC;
 #endif
 
@@ -423,7 +465,17 @@ static void bta_ag_create_sco(tBTA_AG_SCB* p_scb, bool is_orig) {
       params.max_latency_ms = 10;
       params.retransmission_effort = ESCO_RETRANSMISSION_POWER;
     }
+    /** M: Modify for SCO retry @{ */
+    if(retry_with_sco_only ==  false) {
+      retry_with_sco_only = true;
+    } else {
+      params.retransmission_effort = ESCO_RETRANSMISSION_OFF;
+      retry_with_sco_only = false;
+    }
+  } else {
+    retry_with_sco_only = false;
   }
+  /** @} */
 
   /* If initiating, setup parameters to start SCO/eSCO connection */
   if (is_orig) {
@@ -436,12 +488,20 @@ static void bta_ag_create_sco(tBTA_AG_SCB* p_scb, bool is_orig) {
 
     /* tell sys to stop av if any */
     bta_sys_sco_use(BTA_ID_AG, p_scb->app_id, p_scb->peer_addr);
+/** M: Change the power mode to Active until SCO open is completed @{ */
+  {
+    bta_sys_busy(BTA_ID_AG, p_scb->app_id, p_scb->peer_addr);
+  }
+/** @} */
 
     /* Send pending commands to create SCO connection to peer */
     bta_ag_create_pending_sco(p_scb, bta_ag_cb.sco.is_local);
     APPL_TRACE_API("%s: orig %d, inx 0x%04x, pkt types 0x%04x", __func__,
                    is_orig, p_scb->sco_idx, params.packet_types);
   } else {
+    /** M: Modify for SCO retry @{ */
+    retry_with_sco_only = false;
+    /** @} */
     /* Not initiating, go to listen mode */
     tBTM_STATUS status = BTM_CreateSco(
         &p_scb->peer_addr, false, params.packet_types, &p_scb->sco_idx,
@@ -590,13 +650,69 @@ void bta_ag_codec_negotiate(tBTA_AG_SCB* p_scb) {
     /* Change the power mode to Active until SCO open is completed. */
     bta_sys_busy(BTA_ID_AG, p_scb->app_id, p_scb->peer_addr);
 
+    /** M: Force to use SCO. @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+    uint8_t lmp_ver = 0;
+    uint16_t lmp_subver = 0;
+    uint16_t mfct_set = 0;
+    bool is_whitelist = false;
+
+    BTM_ReadRemoteVersion(p_scb->peer_addr, &lmp_ver,
+            &mfct_set, &lmp_subver);
+    //Realtek Semiconductor Corporation(93)
+    //Airoha Technology Corp. (148)
+    if (mfct_set == 93 || mfct_set == 148)
+    {
+      APPL_TRACE_DEBUG("need use eSco");
+    }
+
+    //Xradio (0x063d)
+    if( (lmp_ver == 7) && (mfct_set == 1597) && ((lmp_subver == 0x0d04) || (lmp_subver == 0x0d07)|| (lmp_subver == 0x0d03)) )
+    {
+        is_whitelist = true;
+        APPL_TRACE_DEBUG("need use eSco for Xradio device");
+    }
+
+    //RDA Microelectronics (97)
+    if( (lmp_ver == 7) && (mfct_set == 97) && (lmp_subver == 20) )
+    {
+        is_whitelist = true;
+        APPL_TRACE_DEBUG("need use eSco for RDA device (i-ball)");
+    }
+
+    if ((interop_mtk_match_addr_name(INTEROP_MTK_HFP_FORCE_TO_USE_SCO,
+        &(p_scb->peer_addr)) ||interop_mtk_match_addr_name(
+        INTEROP_MTK_HFP_FORCE_TO_USE_CVSD, &(p_scb->peer_addr)))
+        && (mfct_set != 93 && mfct_set != 148)
+        && !is_whitelist) {
+      p_scb->sco_codec = BTA_AG_CODEC_CVSD;
+    }
+#endif
+    /** @} */
+
     /* Send +BCS to the peer */
     bta_ag_send_bcs(p_scb);
 
+/** M: Use the original negotiation timeout @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+    if (interop_mtk_match_addr_name(INTEROP_MTK_HFP_USE_ORIGINAL_TIMEOUT,
+            &(p_scb->peer_addr)) ||interop_mtk_match_addr_name(
+            INTEROP_MTK_HFP_USE_ORIGINAL_TIMEOUT, &(p_scb->peer_addr))){
+        APPL_TRACE_DEBUG("Set Negotiation timeout be 3s");
+        /* Start timer to handle timeout */
+        alarm_set_on_mloop(p_scb->codec_negotiation_timer,
+        BTA_AG_CODEC_NEGOTIATION_ORI_TIMEOUT_MS,
+        bta_ag_codec_negotiation_timer_cback, p_scb);
+    }else
+#endif
+    /** @} */
+
+    {
     /* Start timer to handle timeout */
     alarm_set_on_mloop(p_scb->codec_negotiation_timer,
                        BTA_AG_CODEC_NEGOTIATION_TIMEOUT_MS,
                        bta_ag_codec_negotiation_timer_cback, p_scb);
+    }
   } else {
     /* use same codec type as previous SCO connection, skip codec negotiation */
     APPL_TRACE_DEBUG(
@@ -725,6 +841,15 @@ static void bta_ag_sco_event(tBTA_AG_SCB* p_scb, uint8_t event) {
           if (!bta_ag_other_scb_open(p_scb)) {
             p_sco->state = BTA_AG_SCO_SHUTDOWN_ST;
           }
+        /** M: Modify for codec negotiation failed @{ */
+        else
+        {
+            APPL_TRACE_ERROR("%s: Failed for index 0x%04x, device %s", __func__,
+                     p_scb->sco_idx, p_scb->peer_addr.ToString().c_str());
+            /* sco open is not started yet. just go back to listening */
+            p_sco->state = BTA_AG_SCO_LISTEN_ST;
+        }
+        /** @} */
           break;
 
         case BTA_AG_SCO_CLOSE_E:
@@ -737,6 +862,19 @@ static void bta_ag_sco_event(tBTA_AG_SCB* p_scb, uint8_t event) {
           bta_ag_create_sco(p_scb, false);
           p_sco->state = BTA_AG_SCO_LISTEN_ST;
           break;
+
+        /** M: Recovery the sco state machine @{ */
+#if defined(MTK_INTEROP_EXTENSION) && (MTK_INTEROP_EXTENSION == TRUE)
+        case BTA_AG_SCO_OPEN_E:
+            if (interop_mtk_match_addr_name(INTEROP_MTK_HFP_SCO_RECOVERY,
+                    &(p_scb->peer_addr)) ||interop_mtk_match_addr_name(
+                    INTEROP_MTK_HFP_SCO_RECOVERY, &(p_scb->peer_addr))){
+                APPL_TRACE_DEBUG("Restart codec negotiation");
+                bta_ag_codec_negotiate(p_scb);
+                break;
+            }
+#endif
+        /** @} */
 
         default:
           APPL_TRACE_WARNING("%s: BTA_AG_SCO_CODEC_ST: Ignoring event %s[%d]",
@@ -778,9 +916,14 @@ static void bta_ag_sco_event(tBTA_AG_SCB* p_scb, uint8_t event) {
           if (p_scb != p_sco->p_curr_scb) {
             /* remove listening connection */
             bta_ag_remove_sco(p_scb, false);
-          } else
-            p_sco->state = BTA_AG_SCO_SHUTTING_ST;
-
+          } else {
+            /** M: Bug Fix for ag sco state machine @{ */
+            if (!bta_ag_other_scb_open(p_scb))
+              p_sco->state = BTA_AG_SCO_SHUTDOWN_ST;
+            else
+              p_sco->state = BTA_AG_SCO_LISTEN_ST;
+            /** @} */
+          }
           break;
 
         case BTA_AG_SCO_CONN_OPEN_E:
@@ -1276,6 +1419,15 @@ void bta_ag_sco_shutdown(tBTA_AG_SCB* p_scb,
  ******************************************************************************/
 void bta_ag_sco_conn_open(tBTA_AG_SCB* p_scb,
                           UNUSED_ATTR const tBTA_AG_DATA& data) {
+
+  /** M: New Feature for setting volume support to property. @{ */
+  if ((p_scb->peer_features & BTA_AG_PEER_FEAT_VOL) == 0) {
+    property_set("persist.vendor.bluetooth.hfp.vol", "0");
+  } else {
+    property_set("persist.vendor.bluetooth.hfp.vol", "1");
+  }
+  /** @} */
+
   bta_ag_sco_event(p_scb, BTA_AG_SCO_CONN_OPEN_E);
 
   bta_sys_sco_open(BTA_ID_AG, p_scb->app_id, p_scb->peer_addr);
@@ -1283,6 +1435,9 @@ void bta_ag_sco_conn_open(tBTA_AG_SCB* p_scb,
   /* call app callback */
   bta_ag_cback_sco(p_scb, BTA_AG_AUDIO_OPEN_EVT);
 
+  /** M: Modify for SCO retry @{ */
+  retry_with_sco_only = false;
+  /** @} */
   /* reset to mSBC T2 settings as the preferred */
   p_scb->codec_msbc_settings = BTA_AG_SCO_MSBC_SETTINGS_T2;
 }
@@ -1310,6 +1465,10 @@ void bta_ag_sco_conn_close(tBTA_AG_SCB* p_scb,
        (p_scb->sco_codec == BTM_SCO_CODEC_MSBC &&
         p_scb->codec_msbc_settings == BTA_AG_SCO_MSBC_SETTINGS_T1))) {
     bta_ag_sco_event(p_scb, BTA_AG_SCO_REOPEN_E);
+  /** M: Modify for SCO retry @{ */
+  } else if (p_scb->svc_conn && retry_with_sco_only) {
+    bta_ag_create_sco(p_scb, TRUE);
+  /** @} */
   } else {
     /* Indicate if the closing of audio is because of transfer */
     bta_ag_sco_event(p_scb, BTA_AG_SCO_CONN_CLOSE_E);
@@ -1328,6 +1487,9 @@ void bta_ag_sco_conn_close(tBTA_AG_SCB* p_scb,
     bta_ag_cback_sco(p_scb, BTA_AG_AUDIO_CLOSE_EVT);
     p_scb->codec_msbc_settings = BTA_AG_SCO_MSBC_SETTINGS_T2;
   }
+  /** M: Modify for SCO retry @{ */
+  retry_with_sco_only = false;
+  /** @} */
 }
 
 /*******************************************************************************
@@ -1355,6 +1517,12 @@ void bta_ag_sco_conn_rsp(tBTA_AG_SCB* p_scb,
     /* tell sys to stop av if any */
     bta_sys_sco_use(BTA_ID_AG, p_scb->app_id, p_scb->peer_addr);
     /* When HS initiated SCO, it cannot be WBS. */
+/** M: Change the power mode to Active until SCO open is completed @{ */
+  {
+    bta_sys_busy(BTA_ID_AG, p_scb->app_id, p_scb->peer_addr);
+  }
+/** @} */
+
   }
 
   /* If SCO open was initiated from HS, it must be CVSD */
